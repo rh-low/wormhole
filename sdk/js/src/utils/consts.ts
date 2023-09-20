@@ -26,8 +26,9 @@ export const CHAINS = {
   optimism: 24,
   gnosis: 25,
   pythnet: 26,
-  ropsten: 10001,
-  wormholechain: 3104,
+  xpla: 28,
+  btc: 29,
+  wormchain: 3104,
 } as const;
 
 export type ChainName = keyof typeof CHAINS;
@@ -54,15 +55,15 @@ export type EVMChainName =
   | "arbitrum"
   | "optimism"
   | "gnosis"
-  | "ropsten";
-  /**
+  ;
+
+/**
  *
  * All the Solana-based chain names that Wormhole supports
  */
-export type SolanaChainName =
-| "solana"
-| "pythnet";
+export type SolanaChainName = "solana" | "pythnet";
 
+export type CosmWasmChainName = "terra" | "terra2" | "injective" | "xpla";
 export type TerraChainName = "terra" | "terra2";
 
 export type Contracts = {
@@ -74,6 +75,8 @@ export type Contracts = {
 export type ChainContracts = {
   [chain in ChainName]: Contracts;
 };
+
+export type Network = "MAINNET" | "TESTNET" | "DEVNET";
 
 const MAINNET = {
   unset: {
@@ -167,8 +170,9 @@ const MAINNET = {
     nft_bridge: undefined,
   },
   aptos: {
-    core: undefined,
-    token_bridge: undefined,
+    core: "0x5bc11445584a763c1fa7ed39081f1b920954da14e04b32440cba863d03e19625",
+    token_bridge:
+      "0x576410486a2da45eee6c949c995670112ddf2fbeedab20350d506328eefc9d4f",
     nft_bridge: undefined,
   },
   sui: {
@@ -178,8 +182,8 @@ const MAINNET = {
   },
   moonbeam: {
     core: "0xC8e2b0cD52Cf01b0Ce87d389Daa3d414d4cE29f3",
-    token_bridge: undefined,
-    nft_bridge: undefined,
+    token_bridge: "0xb1731c586ca89a23809861c6103f0b96b3f57d92",
+    nft_bridge: "0x453cfbe096c0f8d763e8c5f24b441097d577bde2",
   },
   neon: {
     core: undefined,
@@ -194,13 +198,13 @@ const MAINNET = {
   },
   arbitrum: {
     core: "0xa5f208e072434bC67592E4C49C1B991BA79BCA46",
-    token_bridge: undefined,
-    nft_bridge: undefined,
+    token_bridge: "0x0b2402144Bb366A632D14B83F244D2e0e21bD39c",
+    nft_bridge: "0x3dD14D553cFD986EAC8e3bddF629d82073e188c8",
   },
   optimism: {
     core: "0xEe91C335eab126dF5fDB3797EA9d6aD93aeC9722",
-    token_bridge: undefined,
-    nft_bridge: undefined,
+    token_bridge: "0x1D68124e65faFC907325e3EDbF8c4d84499DAa8b",
+    nft_bridge: "0xfE8cD454b4A1CA468B57D79c0cc77Ef5B6f64585",
   },
   gnosis: {
     core: "0xa321448d90d4e5b0A732867c18eA198e75CAC48E",
@@ -212,12 +216,18 @@ const MAINNET = {
     token_bridge: undefined,
     nft_bridge: undefined,
   },
-  ropsten: {
+  xpla: {
+    core: "xpla1jn8qmdda5m6f6fqu9qv46rt7ajhklg40ukpqchkejcvy8x7w26cqxamv3w",
+    token_bridge:
+      "xpla137w0wfch2dfmz7jl2ap8pcmswasj8kg06ay4dtjzw7tzkn77ufxqfw7acv",
+    nft_bridge: undefined,
+  },
+  btc: {
     core: undefined,
     token_bridge: undefined,
     nft_bridge: undefined,
   },
-  wormholechain: {
+  wormchain: {
     core: undefined,
     token_bridge: undefined,
     nft_bridge: undefined,
@@ -306,18 +316,19 @@ const TESTNET = {
     nft_bridge: undefined,
   },
   injective: {
-    core: undefined,
-    token_bridge: undefined,
+    core: "inj1xx3aupmgv3ce537c0yce8zzd3sz567syuyedpg",
+    token_bridge: "inj1q0e70vhrv063eah90mu97sazhywmeegp7myvnh",
     nft_bridge: undefined,
   },
   osmosis: {
-    core: undefined,
+    core: "osmo1hggkxr0hpw83f8vuft7ruvmmamsxmwk2hzz6nytdkzyup9krt0dq27sgyx",
     token_bridge: undefined,
     nft_bridge: undefined,
   },
   aptos: {
-    core: undefined,
-    token_bridge: undefined,
+    core: "0x5bc11445584a763c1fa7ed39081f1b920954da14e04b32440cba863d03e19625",
+    token_bridge:
+      "0x576410486a2da45eee6c949c995670112ddf2fbeedab20350d506328eefc9d4f",
     nft_bridge: undefined,
   },
   sui: {
@@ -331,9 +342,9 @@ const TESTNET = {
     nft_bridge: "0x98A0F4B96972b32Fcb3BD03cAeB66A44a6aB9Edb",
   },
   neon: {
-    core: "0xE4eacc10990ba3308DdCC72d985f2a27D20c7d03",
-    token_bridge: "0xd11De1f930eA1F7Dd0290Fe3a2e35b9C91AEFb37",
-    nft_bridge: "0xa52Da3B1ffd258a2fFB7719a6aeE24095eEE24E2",
+    core: "0x6b9C8671cdDC8dEab9c719bB87cBd3e782bA6a35",
+    token_bridge: "0xC7A204bDBFe983FCD8d8E61D02b475D4073fF97e",
+    nft_bridge: "0x23908A62110e21C04F3A4e011d24F901F911744A",
   },
   terra2: {
     core: "terra19nv3xr5lrmmr7egvrk2kqgw4kcn43xrtd5g0mpgwwvhetusk4k7s66jyv0",
@@ -342,14 +353,14 @@ const TESTNET = {
     nft_bridge: undefined,
   },
   arbitrum: {
-    core: "0xE4eacc10990ba3308DdCC72d985f2a27D20c7d03",
-    token_bridge: undefined,
-    nft_bridge: undefined,
+    core: "0xC7A204bDBFe983FCD8d8E61D02b475D4073fF97e",
+    token_bridge: "0x23908A62110e21C04F3A4e011d24F901F911744A",
+    nft_bridge: "0xEe3dB83916Ccdc3593b734F7F2d16D630F39F1D0",
   },
   optimism: {
-    core: "0xE4eacc10990ba3308DdCC72d985f2a27D20c7d03",
-    token_bridge: undefined,
-    nft_bridge: undefined,
+    core: "0x6b9C8671cdDC8dEab9c719bB87cBd3e782bA6a35",
+    token_bridge: "0xC7A204bDBFe983FCD8d8E61D02b475D4073fF97e",
+    nft_bridge: "0x23908A62110e21C04F3A4e011d24F901F911744A",
   },
   gnosis: {
     core: "0xE4eacc10990ba3308DdCC72d985f2a27D20c7d03",
@@ -361,12 +372,18 @@ const TESTNET = {
     token_bridge: undefined,
     nft_bridge: undefined,
   },
-  ropsten: {
-    core: "0x210c5F5e2AF958B4defFe715Dc621b7a3BA888c5",
-    token_bridge: "0xF174F9A837536C449321df1Ca093Bb96948D5386",
-    nft_bridge: "0x2b048Da40f69c8dc386a56705915f8E966fe1eba",
+  xpla: {
+    core: "xpla1upkjn4mthr0047kahvn0llqx4qpqfn75lnph4jpxfn8walmm8mqsanyy35",
+    token_bridge:
+      "xpla1kek6zgdaxcsu35nqfsyvs2t9vs87dqkkq6hjdgczacysjn67vt8sern93x",
+    nft_bridge: undefined,
   },
-  wormholechain: {
+  btc: {
+    core: undefined,
+    token_bridge: undefined,
+    nft_bridge: undefined,
+  },
+  wormchain: {
     core: undefined,
     token_bridge: undefined,
     nft_bridge: undefined,
@@ -465,8 +482,9 @@ const DEVNET = {
     nft_bridge: undefined,
   },
   aptos: {
-    core: undefined,
-    token_bridge: undefined,
+    core: "0xde0036a9600559e295d5f6802ef6f3f802f510366e0c23912b0655d972166017",
+    token_bridge:
+      "0x84a5f374d29fc77e370014dce4fd6a55b58ad608de8074b0be5571701724da31",
     nft_bridge: undefined,
   },
   sui: {
@@ -510,12 +528,17 @@ const DEVNET = {
     token_bridge: undefined,
     nft_bridge: undefined,
   },
-  ropsten: {
+  xpla: {
     core: undefined,
     token_bridge: undefined,
     nft_bridge: undefined,
   },
-  wormholechain: {
+  btc: {
+    core: undefined,
+    token_bridge: undefined,
+    nft_bridge: undefined,
+  },
+  wormchain: {
     core: "wormhole1ap5vgur5zlgys8whugfegnn43emka567dtq0jl",
     token_bridge: "wormhole1zugu6cajc4z7ue29g9wnes9a5ep9cs7yu7rn3z",
     nft_bridge: undefined,
@@ -587,8 +610,9 @@ export const CHAIN_ID_ARBITRUM = CHAINS["arbitrum"];
 export const CHAIN_ID_OPTIMISM = CHAINS["optimism"];
 export const CHAIN_ID_GNOSIS = CHAINS["gnosis"];
 export const CHAIN_ID_PYTHNET = CHAINS["pythnet"];
-export const CHAIN_ID_ETHEREUM_ROPSTEN = CHAINS["ropsten"];
-export const CHAIN_ID_WORMHOLE_CHAIN = CHAINS["wormholechain"];
+export const CHAIN_ID_XPLA = CHAINS["xpla"];
+export const CHAIN_ID_BTC = CHAINS["btc"];
+export const CHAIN_ID_WORMCHAIN = CHAINS["wormchain"];
 
 // This inverts the [[CHAINS]] object so that we can look up a chain by id
 export type ChainIdToName = {
@@ -608,8 +632,9 @@ export const CHAIN_ID_TO_NAME: ChainIdToName = Object.entries(CHAINS).reduce(
  */
 export type EVMChainId = typeof CHAINS[EVMChainName];
 
-export type TerraChainId = typeof CHAINS[TerraChainName];
+export type CosmWasmChainId = typeof CHAINS[CosmWasmChainName];
 
+export type TerraChainId = typeof CHAINS[TerraChainName];
 /**
  *
  * Returns true when called with a valid chain, and narrows the type in the
@@ -662,6 +687,22 @@ export function toChainName(chainId: ChainId): ChainName {
   return CHAIN_ID_TO_NAME[chainId];
 }
 
+export function toCosmWasmChainId(
+  chainName: CosmWasmChainName
+): CosmWasmChainId {
+  return CHAINS[chainName];
+}
+
+export function coalesceCosmWasmChainId(
+  chain: CosmWasmChainId | CosmWasmChainName
+): CosmWasmChainId {
+  // this is written in a way that for invalid inputs (coming from vanilla
+  // javascript or someone doing type casting) it will always return undefined.
+  return typeof chain === "number" && isCosmWasmChain(chain)
+    ? chain
+    : toCosmWasmChainId(chain);
+}
+
 export function coalesceChainId(chain: ChainId | ChainName): ChainId {
   // this is written in a way that for invalid inputs (coming from vanilla
   // javascript or someone doing type casting) it will always return undefined.
@@ -701,13 +742,24 @@ export function isEVMChain(
     chainId === CHAIN_ID_NEON ||
     chainId === CHAIN_ID_ARBITRUM ||
     chainId === CHAIN_ID_OPTIMISM ||
-    chainId === CHAIN_ID_GNOSIS ||
-    chainId === CHAIN_ID_ETHEREUM_ROPSTEN
+    chainId === CHAIN_ID_GNOSIS
   ) {
     return isEVM(chainId);
   } else {
     return notEVM(chainId);
   }
+}
+
+export function isCosmWasmChain(
+  chain: ChainId | ChainName
+): chain is CosmWasmChainId | CosmWasmChainName {
+  const chainId = coalesceChainId(chain);
+  return (
+    chainId === CHAIN_ID_TERRA ||
+    chainId === CHAIN_ID_TERRA2 ||
+    chainId === CHAIN_ID_INJECTIVE ||
+    chainId === CHAIN_ID_XPLA
+  );
 }
 
 export function isTerraChain(
@@ -735,8 +787,9 @@ export function assertEVMChain(
 export const WSOL_ADDRESS = "So11111111111111111111111111111111111111112";
 export const WSOL_DECIMALS = 9;
 export const MAX_VAA_DECIMALS = 8;
+export const APTOS_TOKEN_BRIDGE_EMITTER_ADDRESS =
+  "0000000000000000000000000000000000000000000000000000000000000001";
 
-// TODO: will this work for terra2?
 export const TERRA_REDEEMED_CHECK_WALLET_ADDRESS =
   "terra1x46rqay4d3cssq8gxxvqz8xt6nwlz4td20k38v";
 

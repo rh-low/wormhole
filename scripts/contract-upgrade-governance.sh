@@ -141,6 +141,10 @@ case "$chain_name" in
     explorer="https://aurorascan.dev/address/"
     evm=true
     ;;
+  algorand)
+    chain=8
+    explorer="https://algoexplorer.io/address/"
+    ;;
   fantom)
     chain=10
     explorer="https://ftmscan.com/address/"
@@ -164,6 +168,20 @@ case "$chain_name" in
   celo)
     chain=14
     explorer="https://celoscan.xyz/address/"
+    evm=true
+    ;;
+  near)
+    chain=15
+    explorer="https://explorer.near.org/accounts/"
+    ;;
+  arbitrum)
+    chain=23
+    explorer="https://arbiscan.io/address/"
+    evm=true
+    ;;
+  optimism)
+    chain=24
+    explorer="https://optimistic.etherscan.io/address/"
     evm=true
     ;;
   *)
@@ -243,6 +261,34 @@ function solana_artifact() {
   esac
 }
 
+function near_artifact() {
+  case "$module" in
+  bridge|core)
+    echo "artifacts/near_wormhole.wasm"
+    ;;
+  token_bridge)
+    echo "artifacts/near_token_bridge.wasm"
+    ;;
+  *) echo "unknown module $module" >&2
+     usage
+     ;;
+  esac
+}
+
+function algorand_artifact() {
+  case "$module" in
+  bridge|core)
+    echo "artifacts/core_approve.teal.hash"
+    ;;
+  token_bridge)
+    echo "artifacts/token_approve.teal.hash"
+    ;;
+  *) echo "unknown module $module" >&2
+     usage
+     ;;
+  esac
+}
+
 function terra_artifact() {
   case "$module" in
   bridge|core)
@@ -287,6 +333,11 @@ echo "$rest" >> "$gov_msg_file"
 verify=$(guardiand admin governance-vaa-verify "$gov_msg_file" 2>&1)
 digest=$(echo "$verify" | grep "VAA with digest" | cut -d' ' -f6 | sed 's/://g')
 
+# massage the digest into the same format that the inject command prints it
+digest=$(echo "$digest" | awk '{print toupper($0)}' | sed 's/^0X//')
+# we use the first 7 characters of the digest as an identifier for the prototxt file
+gov_id=$(echo "$digest" | cut -c1-7)
+
 ################################################################################
 # Print vote command and expected digests
 
@@ -297,12 +348,12 @@ cat <<-EOD
 	Shell command for voting:
 
 	\`\`\`shell
-	cat << EOF > governance.prototxt
+	cat << EOF > governance-$gov_id.prototxt
 	$(cat "$gov_msg_file")
 
 	EOF
 
-	guardiand admin governance-vaa-inject --socket /path/to/admin.sock governance.prototxt
+	guardiand admin governance-vaa-inject --socket /path/to/admin.sock governance-$gov_id.prototxt
 	\`\`\`
 
 	Expected digest(s):
@@ -367,6 +418,34 @@ elif [ "$chain_name" = "solana" ]; then
 	wormhole/solana$ ./verify -n mainnet $(solana_artifact) $address
 	\`\`\`
 EOF
+elif [ "$chain_name" = "near" ]; then
+  cat <<-EOF >> "$instructions_file"
+	## Build
+	\`\`\`shell
+	wormhole/near $ make artifacts
+	\`\`\`
+
+	This command will compile all the contracts into the \`artifacts\` directory using Docker to ensure that the build artifacts are deterministic.
+
+	Next, you can look at the checksums of the built .wasm files
+
+	\`\`\`shell
+	# $module
+	wormhole/near$ sha256sum $(near_artifact)
+	\`\`\`
+EOF
+elif [ "$chain_name" = "algorand" ]; then
+  cat <<-EOF >> "$instructions_file"
+	## Build
+	\`\`\`shell
+	wormhole/algorand $ make artifacts
+	\`\`\`
+
+	This command will compile all the contracts into the \`artifacts\` directory using Docker to ensure that the build artifacts are deterministic.
+
+	You can then review $(algorand_artifact) to confirm the supplied hash value
+
+EOF
 elif [ "$chain_name" = "terra" ]; then
   cat <<-EOF >> "$instructions_file"
 	## Build
@@ -383,7 +462,7 @@ elif [ "$chain_name" = "terra" ]; then
 
 	\`\`\`shell
 	# $module
-	wormhole/terra$ ./verify -n mainnet $(terra_artifact) $terra_code_id
+	wormhole/terra$ ./verify -n mainnet -c $chain_name -w $(terra_artifact) -i $terra_code_id
 	\`\`\`
 EOF
 else

@@ -32,10 +32,15 @@ spec:
       containers:
         - name: near-node
           image: near-node
+          env:
+            # this still results in DEBUG logs from "stats", but `warn,stats=warn` didn't work
+            - name: RUST_LOG
+              value: warn
           command:
             - /bin/sh
             - -c
-            - /tmp/start_node.sh
+            # because the above still left logs, redirecting stderr
+            - "/tmp/start_node.sh 2> /dev/null"
           ports:
             - containerPort: 3030
               name: node
@@ -46,17 +51,16 @@ spec:
           readinessProbe:
             tcpSocket:
               port: 3030
-        - name: near-contracts
-          image: near-contracts
+        - name: near-deploy
+          image: near-deploy
           command:
             - /bin/sh
             - -c
-            - "sh devnet_deploy.sh && touch success && sleep infinity"
+            - "sh /app/devnet_deploy.sh && touch success && sleep infinity"
           readinessProbe:
             tcpSocket:
               port: 3030
             periodSeconds: 1
             initialDelaySeconds: 15
-            periodSeconds: 5
 
       restartPolicy: Always

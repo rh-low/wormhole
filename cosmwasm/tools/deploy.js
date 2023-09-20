@@ -20,6 +20,8 @@ const artifacts = [
   "cw20_wrapped_2.wasm",
   "cw20_base.wasm",
   "mock_bridge_integration_2.wasm",
+  "shutdown_core_bridge_cosmwasm.wasm",
+  "shutdown_token_bridge_cosmwasm.wasm",
 ];
 
 /* Check that the artifact folder contains all the wasm files we expect and nothing else */
@@ -179,6 +181,9 @@ addresses["token_bridge_terra_2.wasm"] = await instantiate(
     wormhole_contract: addresses["wormhole.wasm"],
     wrapped_asset_code_id: codeIds["cw20_wrapped_2.wasm"],
     chain_id: 18,
+    native_denom: "uluna",
+    native_symbol: "LUNA",
+    native_decimals: 6,
   },
   "tokenBridge"
 );
@@ -214,6 +219,12 @@ const contract_registrations = {
     process.env.REGISTER_ALGO_TOKEN_BRIDGE_VAA,
     // TERRA
     process.env.REGISTER_TERRA_TOKEN_BRIDGE_VAA,
+    // NEAR
+    process.env.REGISTER_NEAR_TOKEN_BRIDGE_VAA,
+    // Wormhole Chain
+    process.env.REGISTER_WORMCHAIN_TOKEN_BRIDGE_VAA,
+    // APTOS
+    process.env.REGISTER_APTOS_TOKEN_BRIDGE_VAA,
   ],
 };
 

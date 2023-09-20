@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -14,10 +14,10 @@ import (
 	"github.com/mr-tron/base58"
 	"github.com/spf13/pflag"
 
-	"github.com/certusone/wormhole/node/pkg/common"
 	gossipv1 "github.com/certusone/wormhole/node/pkg/proto/gossip/v1"
 	publicrpcv1 "github.com/certusone/wormhole/node/pkg/proto/publicrpc/v1"
-	"github.com/certusone/wormhole/node/pkg/vaa"
+	"github.com/wormhole-foundation/wormhole/sdk"
+	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 
 	"github.com/spf13/cobra"
 	"github.com/status-im/keycard-go/hexutils"
@@ -55,6 +55,7 @@ func init() {
 	ClientChainGovernorDropPendingVAACmd.Flags().AddFlagSet(pf)
 	ClientChainGovernorReleasePendingVAACmd.Flags().AddFlagSet(pf)
 	ClientChainGovernorResetReleaseTimerCmd.Flags().AddFlagSet(pf)
+	PurgePythNetVaasCmd.Flags().AddFlagSet(pf)
 
 	AdminCmd.AddCommand(AdminClientInjectGuardianSetUpdateCmd)
 	AdminCmd.AddCommand(AdminClientFindMissingMessagesCmd)
@@ -67,6 +68,7 @@ func init() {
 	AdminCmd.AddCommand(ClientChainGovernorDropPendingVAACmd)
 	AdminCmd.AddCommand(ClientChainGovernorReleasePendingVAACmd)
 	AdminCmd.AddCommand(ClientChainGovernorResetReleaseTimerCmd)
+	AdminCmd.AddCommand(PurgePythNetVaasCmd)
 }
 
 var AdminCmd = &cobra.Command{
@@ -137,6 +139,13 @@ var ClientChainGovernorResetReleaseTimerCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 }
 
+var PurgePythNetVaasCmd = &cobra.Command{
+	Use:   "purge-pythnet-vaas [DAYS_OLD] <logonly>",
+	Short: "Deletes PythNet VAAs from the database that are more than [DAYS_OLD] days only (if logonly is specified, doesn't delete anything)",
+	Run:   runPurgePythNetVaas,
+	Args:  cobra.RangeArgs(1, 2),
+}
+
 func getAdminClient(ctx context.Context, addr string) (*grpc.ClientConn, nodev1.NodePrivilegedServiceClient, error) {
 	conn, err := grpc.DialContext(ctx, fmt.Sprintf("unix:///%s", addr), grpc.WithTransportCredentials(insecure.NewCredentials()))
 
@@ -170,7 +179,7 @@ func runInjectGovernanceVAA(cmd *cobra.Command, args []string) {
 	}
 	defer conn.Close()
 
-	b, err := ioutil.ReadFile(path)
+	b, err := os.ReadFile(path)
 	if err != nil {
 		log.Fatalf("failed to read file: %v", err)
 	}
@@ -211,7 +220,7 @@ func runFindMissingMessages(cmd *cobra.Command, args []string) {
 		EmitterChain:   uint32(chainID),
 		EmitterAddress: emitterAddress,
 		RpcBackfill:    *shouldBackfill,
-		BackfillNodes:  common.PublicRPCEndpoints,
+		BackfillNodes:  sdk.PublicRPCEndpoints,
 	}
 	resp, err := c.FindMissingMessages(ctx, &msg)
 	if err != nil {
@@ -404,6 +413,46 @@ func runChainGovernorResetReleaseTimer(cmd *cobra.Command, args []string) {
 	resp, err := c.ChainGovernorResetReleaseTimer(ctx, &msg)
 	if err != nil {
 		log.Fatalf("failed to run ChainGovernorResetReleaseTimer RPC: %s", err)
+	}
+
+	fmt.Println(resp.Response)
+}
+
+func runPurgePythNetVaas(cmd *cobra.Command, args []string) {
+	daysOld, err := strconv.Atoi(args[0])
+	if err != nil {
+		log.Fatalf("invalid DAYS_OLD: %v", err)
+	}
+
+	if daysOld < 0 {
+		log.Fatalf("DAYS_OLD may not be negative")
+	}
+
+	logOnly := false
+	if len(args) > 1 {
+		if args[1] != "logonly" {
+			log.Fatalf("invalid option, only \"logonly\" is supported")
+		}
+
+		logOnly = true
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	if err != nil {
+		log.Fatalf("failed to get admin client: %v", err)
+	}
+	defer conn.Close()
+
+	msg := nodev1.PurgePythNetVaasRequest{
+		DaysOld: uint64(daysOld),
+		LogOnly: logOnly,
+	}
+	resp, err := c.PurgePythNetVaas(ctx, &msg)
+	if err != nil {
+		log.Fatalf("failed to run PurgePythNetVaas RPC: %s", err)
 	}
 
 	fmt.Println(resp.Response)

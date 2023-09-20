@@ -159,7 +159,10 @@ async fn bridge_messages() {
         assert_eq!(posted_message.message.nonce, nonce);
         assert_eq!(posted_message.message.sequence, sequence);
         assert_eq!(posted_message.message.emitter_chain, 1);
-        assert_eq!(&posted_message.message.emitter_address, emitter.pubkey().as_ref());
+        assert_eq!(
+            &posted_message.message.emitter_address,
+            emitter.pubkey().as_ref()
+        );
         assert_eq!(posted_message.message.payload, message);
         assert_eq!(
             posted_message.message.emitter_address,
@@ -203,7 +206,10 @@ async fn bridge_messages() {
         assert_eq!(posted_message.message.nonce, nonce);
         assert_eq!(posted_message.message.sequence, sequence);
         assert_eq!(posted_message.message.emitter_chain, 1);
-        assert_eq!(&posted_message.message.emitter_address, emitter.pubkey().as_ref());
+        assert_eq!(
+            &posted_message.message.emitter_address,
+            emitter.pubkey().as_ref()
+        );
         assert_eq!(posted_message.message.payload, message);
         assert_eq!(
             posted_message.message.emitter_address,
@@ -244,7 +250,10 @@ async fn bridge_messages() {
     assert_eq!(posted_message.message.nonce, nonce);
     assert_eq!(posted_message.message.sequence, sequence);
     assert_eq!(posted_message.message.emitter_chain, 1);
-    assert_eq!(&posted_message.message.emitter_address, emitter.pubkey().as_ref());
+    assert_eq!(
+        &posted_message.message.emitter_address,
+        emitter.pubkey().as_ref()
+    );
     assert_eq!(posted_message.message.payload, message);
     assert_eq!(
         posted_message.message.emitter_address,
@@ -286,7 +295,10 @@ async fn bridge_messages() {
     assert_eq!(posted_message.message.nonce, nonce);
     assert_eq!(posted_message.message.sequence, sequence);
     assert_eq!(posted_message.message.emitter_chain, 1);
-    assert_eq!(&posted_message.message.emitter_address, emitter.pubkey().as_ref());
+    assert_eq!(
+        &posted_message.message.emitter_address,
+        emitter.pubkey().as_ref()
+    );
     assert_eq!(posted_message.message.payload, message);
     assert_eq!(
         posted_message.message.emitter_address,
@@ -346,7 +358,7 @@ async fn test_bridge_messages_unreliable() {
         );
 
         // Emulate Guardian behaviour, verifying the data and publishing signatures/VAA.
-        let (vaa, body, body_hash) =
+        let (vaa, body, _body_hash) =
             common::generate_vaa(&emitter, message.to_vec(), nonce, sequence, 0, 1);
         let signature_set =
             common::verify_signatures(client, program, payer, body, &context.secret, 0)
@@ -383,8 +395,8 @@ async fn test_bridge_messages_unreliable() {
         assert_eq!(signatures.hash, body);
         assert_eq!(signatures.guardian_set_index, 0);
 
-        for (signature, secret_key) in signatures.signatures.iter().zip(context.secret.iter()) {
-            assert_eq!(*signature, true);
+        for (signature, _secret_key) in signatures.signatures.iter().zip(context.secret.iter()) {
+            assert!(*signature);
         }
     }
 
@@ -703,7 +715,10 @@ async fn guardian_set_change() {
     assert_eq!(posted_message.message.nonce, nonce);
     assert_eq!(posted_message.message.sequence, sequence);
     assert_eq!(posted_message.message.emitter_chain, 1);
-    assert_eq!(&posted_message.message.emitter_address, emitter.pubkey().as_ref());
+    assert_eq!(
+        &posted_message.message.emitter_address,
+        emitter.pubkey().as_ref()
+    );
     assert_eq!(posted_message.message.payload, message);
     assert_eq!(
         posted_message.message.emitter_address,
@@ -762,7 +777,10 @@ async fn guardian_set_change() {
     assert_eq!(posted_message.message.nonce, nonce);
     assert_eq!(posted_message.message.sequence, sequence);
     assert_eq!(posted_message.message.emitter_chain, 1);
-    assert_eq!(&posted_message.message.emitter_address, emitter.pubkey().as_ref());
+    assert_eq!(
+        &posted_message.message.emitter_address,
+        emitter.pubkey().as_ref()
+    );
     assert_eq!(posted_message.message.payload, message);
     assert_eq!(
         posted_message.message.emitter_address,
@@ -949,11 +967,18 @@ async fn set_fees() {
     let emitter = Keypair::new();
     let nonce = rand::thread_rng().gen();
     let message = [0u8; 32].to_vec();
-    assert!(
-        common::post_message(client, program, payer, &emitter, None, nonce, message.clone(), 50)
-            .await
-            .is_err()
-    );
+    assert!(common::post_message(
+        client,
+        program,
+        payer,
+        &emitter,
+        None,
+        nonce,
+        message.clone(),
+        50
+    )
+    .await
+    .is_err());
     common::sync(client, payer).await;
 
     assert_eq!(
@@ -1017,7 +1042,10 @@ async fn set_fees() {
     assert_eq!(posted_message.message.nonce, nonce);
     assert_eq!(posted_message.message.sequence, sequence);
     assert_eq!(posted_message.message.emitter_chain, 1);
-    assert_eq!(&posted_message.message.emitter_address, emitter.pubkey().as_ref());
+    assert_eq!(
+        &posted_message.message.emitter_address,
+        emitter.pubkey().as_ref()
+    );
     assert_eq!(posted_message.message.payload, message);
     assert_eq!(
         posted_message.message.emitter_address,
@@ -1143,10 +1171,18 @@ async fn free_fees() {
     let sequence = context.seq.next(emitter.pubkey().to_bytes());
     let nonce = rand::thread_rng().gen();
     let message = [0u8; 32].to_vec();
-    let _message_key =
-        common::post_message(client, program, payer, &emitter, None, nonce, message.clone(), 0)
-            .await
-            .unwrap();
+    let _message_key = common::post_message(
+        client,
+        program,
+        payer,
+        &emitter,
+        None,
+        nonce,
+        message.clone(),
+        0,
+    )
+    .await
+    .unwrap();
 
     let (vaa, body, _body_hash) =
         common::generate_vaa(&emitter, message.clone(), nonce, sequence, 0, 1);
@@ -1186,7 +1222,10 @@ async fn free_fees() {
     assert_eq!(posted_message.message.nonce, nonce);
     assert_eq!(posted_message.message.sequence, sequence);
     assert_eq!(posted_message.message.emitter_chain, 1);
-    assert_eq!(&posted_message.message.emitter_address, emitter.pubkey().as_ref());
+    assert_eq!(
+        &posted_message.message.emitter_address,
+        emitter.pubkey().as_ref()
+    );
     assert_eq!(posted_message.message.payload, message);
     assert_eq!(
         posted_message.message.emitter_address,

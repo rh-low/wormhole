@@ -1,8 +1,19 @@
-import { AccountLayout, Token, TOKEN_PROGRAM_ID, u64 } from "@solana/spl-token";
 import {
+  ACCOUNT_SIZE,
+  createCloseAccountInstruction,
+  createInitializeAccountInstruction,
+  createTransferInstruction,
+  getMinimumBalanceForRentExemptAccount,
+  getMint,
+  NATIVE_MINT,
+  TOKEN_PROGRAM_ID,
+} from "@solana/spl-token";
+import {
+  Commitment,
   Connection,
   Keypair,
   PublicKey,
+  PublicKeyInitData,
   SystemProgram,
   Transaction,
 } from "@solana/web3.js";
@@ -10,34 +21,34 @@ import { MsgExecuteContract } from "@terra-money/terra.js";
 import { Algodv2 } from "algosdk";
 import { ethers, Overrides } from "ethers";
 import { fromUint8Array } from "js-base64";
-import { TransactionSignerPair, _submitVAAAlgorand } from "../algorand";
+import BN from "bn.js";
+import {
+  TransactionSignerPair,
+  _parseVAAAlgorand,
+  _submitVAAAlgorand,
+} from "../algorand";
 import { Bridge__factory } from "../ethers-contracts";
-import { ixFromRust } from "../solana";
-import { importCoreWasm, importTokenWasm } from "../solana/wasm";
 import {
   CHAIN_ID_NEAR,
   CHAIN_ID_SOLANA,
   ChainId,
-  ChainName,
   MAX_VAA_DECIMALS,
-  WSOL_ADDRESS,
-  WSOL_DECIMALS,
-  uint8ArrayToHex
+  uint8ArrayToHex,
+  callFunctionNear,
+  hashLookup,
 } from "../utils";
-
+import { MsgExecuteContract as MsgExecuteContractInjective } from "@injectivelabs/sdk-ts";
 import {
-    getForeignAssetNear
-} from ".";
-
-import {
-  _parseVAAAlgorand,
-} from "../algorand";
-
-import { hexToNativeString } from "../utils/array";
-import { parseTransferPayload } from "../utils/parseVaa";
-import { Account as nearAccount } from "near-api-js";
-import BN from "bn.js";
-import { providers as nearProviders } from "near-api-js";
+  createCompleteTransferNativeInstruction,
+  createCompleteTransferWrappedInstruction,
+} from "../solana/tokenBridge";
+import { SignedVaa, parseTokenTransferVaa } from "../vaa";
+import { getForeignAssetNear } from "./getForeignAsset";
+import { FunctionCallOptions } from "near-api-js/lib/account";
+import { Provider } from "near-api-js/lib/providers";
+import { MsgExecuteContract as XplaMsgExecuteContract } from "@xpla/xpla.js";
+import { AptosClient, Types } from "aptos";
+import { completeTransferAndRegister } from "../aptos";
 
 export async function redeemOnEth(
   tokenBridgeAddress: string,
@@ -75,43 +86,70 @@ export async function redeemOnTerra(
   });
 }
 
+/**
+ * Submits the supplied VAA to Injective
+ * @param tokenBridgeAddress Address of Inj token bridge contract
+ * @param walletAddress Address of wallet in inj format
+ * @param signedVAA VAA with the attestation message
+ * @returns Message to be broadcast
+ */
+export async function submitVAAOnInjective(
+  tokenBridgeAddress: string,
+  walletAddress: string,
+  signedVAA: Uint8Array
+): Promise<MsgExecuteContractInjective> {
+  return MsgExecuteContractInjective.fromJSON({
+    contractAddress: tokenBridgeAddress,
+    sender: walletAddress,
+    msg: {
+      data: fromUint8Array(signedVAA),
+    },
+    action: "submit_vaa",
+  });
+}
+export const redeemOnInjective = submitVAAOnInjective;
+
+export function redeemOnXpla(
+  tokenBridgeAddress: string,
+  walletAddress: string,
+  signedVAA: Uint8Array
+): XplaMsgExecuteContract {
+  return new XplaMsgExecuteContract(walletAddress, tokenBridgeAddress, {
+    submit_vaa: {
+      data: fromUint8Array(signedVAA),
+    },
+  });
+}
+
 export async function redeemAndUnwrapOnSolana(
   connection: Connection,
-  bridgeAddress: string,
-  tokenBridgeAddress: string,
-  payerAddress: string,
-  signedVAA: Uint8Array
+  bridgeAddress: PublicKeyInitData,
+  tokenBridgeAddress: PublicKeyInitData,
+  payerAddress: PublicKeyInitData,
+  signedVaa: SignedVaa,
+  commitment?: Commitment
 ) {
-  const { parse_vaa } = await importCoreWasm();
-  const { complete_transfer_native_ix } = await importTokenWasm();
-  const parsedVAA = parse_vaa(signedVAA);
-  const parsedPayload = parseTransferPayload(
-    Buffer.from(new Uint8Array(parsedVAA.payload))
+  const parsed = parseTokenTransferVaa(signedVaa);
+  const targetPublicKey = new PublicKey(parsed.to);
+  const targetAmount = await getMint(connection, NATIVE_MINT, commitment).then(
+    (info) =>
+      parsed.amount * BigInt(Math.pow(10, info.decimals - MAX_VAA_DECIMALS))
   );
-  const targetAddress = hexToNativeString(
-    parsedPayload.targetAddress,
-    CHAIN_ID_SOLANA
+  const rentBalance = await getMinimumBalanceForRentExemptAccount(
+    connection,
+    commitment
   );
-  if (!targetAddress) {
-    throw new Error("Failed to read the target address.");
+  if (Buffer.compare(parsed.tokenAddress, NATIVE_MINT.toBuffer()) != 0) {
+    return Promise.reject("tokenAddress != NATIVE_MINT");
   }
-  const targetPublicKey = new PublicKey(targetAddress);
-  const targetAmount =
-    parsedPayload.amount *
-    BigInt(WSOL_DECIMALS - MAX_VAA_DECIMALS) *
-    BigInt(10);
-  const rentBalance = await Token.getMinBalanceRentForExemptAccount(connection);
-  const mintPublicKey = new PublicKey(WSOL_ADDRESS);
   const payerPublicKey = new PublicKey(payerAddress);
   const ancillaryKeypair = Keypair.generate();
 
-  const completeTransferIx = ixFromRust(
-    complete_transfer_native_ix(
-      tokenBridgeAddress,
-      bridgeAddress,
-      payerAddress,
-      signedVAA
-    )
+  const completeTransferIx = createCompleteTransferNativeInstruction(
+    tokenBridgeAddress,
+    bridgeAddress,
+    payerPublicKey,
+    signedVaa
   );
 
   //This will create a temporary account where the wSOL will be moved
@@ -119,93 +157,71 @@ export async function redeemAndUnwrapOnSolana(
     fromPubkey: payerPublicKey,
     newAccountPubkey: ancillaryKeypair.publicKey,
     lamports: rentBalance, //spl token accounts need rent exemption
-    space: AccountLayout.span,
+    space: ACCOUNT_SIZE,
     programId: TOKEN_PROGRAM_ID,
   });
 
   //Initialize the account as a WSOL account, with the original payerAddress as owner
-  const initAccountIx = await Token.createInitAccountInstruction(
-    TOKEN_PROGRAM_ID,
-    mintPublicKey,
+  const initAccountIx = createInitializeAccountInstruction(
     ancillaryKeypair.publicKey,
+    NATIVE_MINT,
     payerPublicKey
   );
 
   //Send in the amount of wSOL which we want converted to SOL
-  const balanceTransferIx = Token.createTransferInstruction(
-    TOKEN_PROGRAM_ID,
+  const balanceTransferIx = createTransferInstruction(
     targetPublicKey,
     ancillaryKeypair.publicKey,
     payerPublicKey,
-    [],
-    new u64(targetAmount.toString(16), 16)
+    targetAmount.valueOf()
   );
 
   //Close the ancillary account for cleanup. Payer address receives any remaining funds
-  const closeAccountIx = Token.createCloseAccountInstruction(
-    TOKEN_PROGRAM_ID,
+  const closeAccountIx = createCloseAccountInstruction(
     ancillaryKeypair.publicKey, //account to close
     payerPublicKey, //Remaining funds destination
-    payerPublicKey, //authority
-    []
+    payerPublicKey //authority
   );
 
-  const { blockhash } = await connection.getRecentBlockhash();
+  const { blockhash } = await connection.getLatestBlockhash(commitment);
   const transaction = new Transaction();
   transaction.recentBlockhash = blockhash;
-  transaction.feePayer = new PublicKey(payerAddress);
-  transaction.add(completeTransferIx);
-  transaction.add(createAncillaryAccountIx);
-  transaction.add(initAccountIx);
-  transaction.add(balanceTransferIx);
-  transaction.add(closeAccountIx);
+  transaction.feePayer = payerPublicKey;
+  transaction.add(
+    completeTransferIx,
+    createAncillaryAccountIx,
+    initAccountIx,
+    balanceTransferIx,
+    closeAccountIx
+  );
   transaction.partialSign(ancillaryKeypair);
   return transaction;
 }
 
 export async function redeemOnSolana(
   connection: Connection,
-  bridgeAddress: string,
-  tokenBridgeAddress: string,
-  payerAddress: string,
-  signedVAA: Uint8Array,
-  feeRecipientAddress?: string
+  bridgeAddress: PublicKeyInitData,
+  tokenBridgeAddress: PublicKeyInitData,
+  payerAddress: PublicKeyInitData,
+  signedVaa: SignedVaa,
+  feeRecipientAddress?: PublicKeyInitData,
+  commitment?: Commitment
 ) {
-  const { parse_vaa } = await importCoreWasm();
-  const parsedVAA = parse_vaa(signedVAA);
-  const isSolanaNative =
-    Buffer.from(new Uint8Array(parsedVAA.payload)).readUInt16BE(65) ===
-    CHAIN_ID_SOLANA;
-  const { complete_transfer_wrapped_ix, complete_transfer_native_ix } =
-    await importTokenWasm();
-  const ixs = [];
-  if (isSolanaNative) {
-    ixs.push(
-      ixFromRust(
-        complete_transfer_native_ix(
-          tokenBridgeAddress,
-          bridgeAddress,
-          payerAddress,
-          signedVAA,
-          feeRecipientAddress
-        )
-      )
-    );
-  } else {
-    ixs.push(
-      ixFromRust(
-        complete_transfer_wrapped_ix(
-          tokenBridgeAddress,
-          bridgeAddress,
-          payerAddress,
-          signedVAA,
-          feeRecipientAddress
-        )
-      )
-    );
-  }
-  const transaction = new Transaction().add(...ixs);
-  const { blockhash } = await connection.getRecentBlockhash();
+  const parsed = parseTokenTransferVaa(signedVaa);
+  const createCompleteTransferInstruction =
+    parsed.tokenChain == CHAIN_ID_SOLANA
+      ? createCompleteTransferNativeInstruction
+      : createCompleteTransferWrappedInstruction;
+  const transaction = new Transaction().add(
+    createCompleteTransferInstruction(
+      tokenBridgeAddress,
+      bridgeAddress,
+      payerAddress,
+      parsed,
+      feeRecipientAddress
+    )
+  );
+  const { blockhash } = await connection.getLatestBlockhash(commitment);
   transaction.recentBlockhash = blockhash;
   transaction.feePayer = new PublicKey(payerAddress);
   return transaction;
@@ -236,66 +252,63 @@ export async function redeemOnAlgorand(
   );
 }
 
-/**
- * This basically just submits the VAA to Near
- * @param client
- * @param tokenBridge Token bridge ID
- * @param vaa The VAA to be redeemed
- * @returns Transaction ID(s)
- */
 export async function redeemOnNear(
-  client: nearAccount,
+  provider: Provider,
+  account: string,
   tokenBridge: string,
   vaa: Uint8Array
-): Promise<String> {
-  let p = _parseVAAAlgorand(vaa);
+): Promise<FunctionCallOptions[]> {
+  const options: FunctionCallOptions[] = [];
+  const p = _parseVAAAlgorand(vaa);
 
   if (p.ToChain !== CHAIN_ID_NEAR) {
     throw new Error("Not destined for NEAR");
   }
 
-  let user = await client.viewFunction(tokenBridge, "hash_lookup", {
-    hash: uint8ArrayToHex(p.ToAddress as Uint8Array),
-  });
+  const { found, value: receiver } = await hashLookup(
+    provider,
+    tokenBridge,
+    uint8ArrayToHex(p.ToAddress as Uint8Array)
+  );
 
-  if (!user[0]) {
+  if (!found) {
     throw new Error(
       "Unregistered receiver (receiving account is not registered)"
     );
   }
 
-  user = user[1];
-
-  let token = await getForeignAssetNear(
-    client,
+  const token = await getForeignAssetNear(
+    provider,
     tokenBridge,
     p.FromChain as ChainId,
     p.Contract as string
   );
 
-  if (token === "") {
-    throw new Error("Unregistered token (this been attested yet?)");
-  }
-
   if (
     (p.Contract as string) !==
     "0000000000000000000000000000000000000000000000000000000000000000"
   ) {
-    let bal = await client.viewFunction(token as string, "storage_balance_of", {
-      account_id: user,
-    });
+    if (token === "" || token === null) {
+      throw new Error("Unregistered token (has it been attested?)");
+    }
+
+    const bal = await callFunctionNear(
+      provider,
+      token as string,
+      "storage_balance_of",
+      {
+        account_id: receiver,
+      }
+    );
 
     if (bal === null) {
-      console.log("Registering ", user, " for ", token);
-      bal = nearProviders.getTransactionLastResult(
-        await client.functionCall({
-          contractId: token as string,
-          methodName: "storage_deposit",
-          args: { account_id: user, registration_only: true },
-          gas: new BN("100000000000000"),
-          attachedDeposit: new BN("2000000000000000000000"), // 0.002 NEAR
-        })
-      );
+      options.push({
+        contractId: token as string,
+        methodName: "storage_deposit",
+        args: { account_id: receiver, registration_only: true },
+        gas: new BN("100000000000000"),
+        attachedDeposit: new BN("2000000000000000000000"), // 0.002 NEAR
+      });
     }
 
     if (
@@ -308,30 +321,28 @@ export async function redeemOnNear(
         )
       ) !== 0
     ) {
-      let bal = await client.viewFunction(
+      const bal = await callFunctionNear(
+        provider,
         token as string,
         "storage_balance_of",
         {
-          account_id: client.accountId,
+          account_id: account,
         }
       );
 
       if (bal === null) {
-        console.log("Registering ", client.accountId, " for ", token);
-        bal = nearProviders.getTransactionLastResult(
-          await client.functionCall({
-            contractId: token as string,
-            methodName: "storage_deposit",
-            args: { account_id: client.accountId, registration_only: true },
-            gas: new BN("100000000000000"),
-            attachedDeposit: new BN("2000000000000000000000"), // 0.002 NEAR
-          })
-        );
+        options.push({
+          contractId: token as string,
+          methodName: "storage_deposit",
+          args: { account_id: account, registration_only: true },
+          gas: new BN("100000000000000"),
+          attachedDeposit: new BN("2000000000000000000000"), // 0.002 NEAR
+        });
       }
     }
   }
 
-  let result = await client.functionCall({
+  options.push({
     contractId: tokenBridge,
     methodName: "submit_vaa",
     args: {
@@ -341,7 +352,7 @@ export async function redeemOnNear(
     gas: new BN("150000000000000"),
   });
 
-  result = await client.functionCall({
+  options.push({
     contractId: tokenBridge,
     methodName: "submit_vaa",
     args: {
@@ -351,5 +362,21 @@ export async function redeemOnNear(
     gas: new BN("150000000000000"),
   });
 
-  return nearProviders.getTransactionLastResult(result);
+  return options;
+}
+
+/**
+ * Register the token specified in the given VAA in the transfer recipient's account if necessary
+ * and complete the transfer.
+ * @param client Client used to transfer data to/from Aptos node
+ * @param tokenBridgeAddress Address of token bridge
+ * @param transferVAA Bytes of transfer VAA
+ * @returns Transaction payload
+ */
+export function redeemOnAptos(
+  client: AptosClient,
+  tokenBridgeAddress: string,
+  transferVAA: Uint8Array
+): Promise<Types.EntryFunctionPayload> {
+  return completeTransferAndRegister(client, tokenBridgeAddress, transferVAA);
 }

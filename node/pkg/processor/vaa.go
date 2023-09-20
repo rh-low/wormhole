@@ -3,12 +3,13 @@ package processor
 import (
 	"encoding/hex"
 
-	"github.com/certusone/wormhole/node/pkg/vaa"
+	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 	"go.uber.org/zap"
 )
 
 type VAA struct {
 	vaa.VAA
+	Unreliable bool
 }
 
 func (v *VAA) HandleQuorum(sigs []*vaa.Signature, hash string, p *Processor) {
@@ -37,11 +38,15 @@ func (v *VAA) HandleQuorum(sigs []*vaa.Signature, hash string, p *Processor) {
 		zap.String("bytes", hex.EncodeToString(vaaBytes)),
 		zap.String("message_id", signed.MessageID()))
 
-	if err := p.db.StoreSignedVAA(signed); err != nil {
+	if err := p.storeSignedVAA(signed); err != nil {
 		p.logger.Error("failed to store signed VAA", zap.Error(err))
 	}
 
 	p.broadcastSignedVAA(signed)
 	p.attestationEvents.ReportVAAQuorum(signed)
 	p.state.signatures[hash].submitted = true
+}
+
+func (v *VAA) IsReliable() bool {
+	return !v.Unreliable
 }

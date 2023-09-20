@@ -16,7 +16,7 @@ import (
 	"github.com/certusone/wormhole/node/pkg/common"
 	"github.com/certusone/wormhole/node/pkg/reporter"
 	"github.com/certusone/wormhole/node/pkg/supervisor"
-	"github.com/certusone/wormhole/node/pkg/vaa"
+	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 )
 
 var (
@@ -80,6 +80,7 @@ func (p *Processor) handleMessage(ctx context.Context, k *common.MessagePublicat
 			Sequence:         k.Sequence,
 			ConsistencyLevel: k.ConsistencyLevel,
 		},
+		Unreliable: k.Unreliable,
 	}
 
 	// A governance message should never be emitted on-chain
@@ -100,13 +101,8 @@ func (p *Processor) handleMessage(ctx context.Context, k *common.MessagePublicat
 	//
 	// Exception: if an observation is made within the settlement time (30s), we'll
 	// process it so other nodes won't consider it a miss.
-	if vb, err := p.db.GetSignedVAABytes(*db.VaaIDFromVAA(&v.VAA)); err == nil {
-		// unmarshal vaa
-		var existing *vaa.VAA
-		if existing, err = vaa.Unmarshal(vb); err != nil {
-			panic("failed to unmarshal VAA from db")
-		}
 
+	if existing, err := p.getSignedVAA(*db.VaaIDFromVAA(&v.VAA)); err == nil {
 		if k.Timestamp.Sub(existing.Timestamp) > settlementTime {
 			p.logger.Info("ignoring observation since we already have a quorum VAA for it",
 				zap.Stringer("emitter_chain", k.EmitterChain),

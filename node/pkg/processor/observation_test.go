@@ -9,10 +9,10 @@ import (
 
 	"github.com/certusone/wormhole/node/pkg/common"
 	gossipv1 "github.com/certusone/wormhole/node/pkg/proto/gossip/v1"
-	"github.com/certusone/wormhole/node/pkg/vaa"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/assert"
+	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )
@@ -75,13 +75,13 @@ func TestHandleInboundSignedVAAWithQuorum(t *testing.T) {
 		{label: "GuardianSetNoKeys", keyOrder: []*ecdsa.PrivateKey{}, indexOrder: []uint8{}, addrs: []ethcommon.Address{},
 			errString: "dropping SignedVAAWithQuorum message since we have a guardian set without keys"},
 		{label: "VAANoSignatures", keyOrder: []*ecdsa.PrivateKey{}, indexOrder: []uint8{0}, addrs: []ethcommon.Address{goodAddr1},
-			errString: "received SignedVAAWithQuorum message with no VAA signatures"},
+			errString: "dropping SignedVAAWithQuorum message because it failed verification: VAA was not signed"},
 		{label: "VAAInvalidSignatures", keyOrder: []*ecdsa.PrivateKey{badPrivateKey1}, indexOrder: []uint8{0}, addrs: []ethcommon.Address{goodAddr1},
-			errString: "received SignedVAAWithQuorum message with invalid VAA signatures"},
+			errString: "dropping SignedVAAWithQuorum message because it failed verification: VAA had bad signatures"},
 		{label: "DuplicateGoodSignaturesNonMonotonic", keyOrder: []*ecdsa.PrivateKey{goodPrivateKey1, goodPrivateKey1, goodPrivateKey1, goodPrivateKey1}, indexOrder: []uint8{0, 0, 0, 0}, addrs: []ethcommon.Address{goodAddr1},
-			errString: "received SignedVAAWithQuorum message with invalid VAA signatures"},
+			errString: "dropping SignedVAAWithQuorum message because it failed verification: VAA had bad signatures"},
 		{label: "DuplicateGoodSignaturesMonotonic", keyOrder: []*ecdsa.PrivateKey{goodPrivateKey1, goodPrivateKey1, goodPrivateKey1, goodPrivateKey1}, indexOrder: []uint8{0, 1, 2, 3}, addrs: []ethcommon.Address{goodAddr1},
-			errString: "received SignedVAAWithQuorum message with invalid VAA signatures"},
+			errString: "dropping SignedVAAWithQuorum message because it failed verification: VAA had bad signatures"},
 	}
 
 	for _, tc := range tests {

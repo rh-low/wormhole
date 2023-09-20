@@ -17,7 +17,7 @@ import (
 	"go.uber.org/zap"
 
 	gossipv1 "github.com/certusone/wormhole/node/pkg/proto/gossip/v1"
-	"github.com/certusone/wormhole/node/pkg/vaa"
+	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 )
 
 var (
@@ -53,7 +53,7 @@ func (p *Processor) handleObservation(ctx context.Context, m *gossipv1.SignedObs
 
 	hash := hex.EncodeToString(m.Hash)
 
-	p.logger.Info("received observation",
+	p.logger.Debug("received observation",
 		zap.String("digest", hash),
 		zap.String("signature", hex.EncodeToString(m.Signature)),
 		zap.String("addr", hex.EncodeToString(m.Addr)),
@@ -192,7 +192,7 @@ func (p *Processor) handleObservation(ctx context.Context, m *gossipv1.SignedObs
 		// We have made this observation on chain!
 
 		// 2/3+ majority required for VAA to be valid - wait until we have quorum to submit VAA.
-		quorum := CalculateQuorum(len(gs.Keys))
+		quorum := vaa.CalculateQuorum(len(gs.Keys))
 
 		p.logger.Info("aggregation state for observation",
 			zap.String("digest", hash),
@@ -247,36 +247,8 @@ func (p *Processor) handleInboundSignedVAAWithQuorum(ctx context.Context, m *gos
 		return
 	}
 
-	// Check if VAA doesn't have any signatures
-	if len(v.Signatures) == 0 {
-		p.logger.Warn("received SignedVAAWithQuorum message with no VAA signatures",
-			zap.String("digest", hash),
-			zap.Any("message", m),
-			zap.Any("vaa", v),
-		)
-		return
-	}
-
-	// Verify VAA has enough signatures for quorum
-	quorum := CalculateQuorum(len(p.gs.Keys))
-	if len(v.Signatures) < quorum {
-		p.logger.Warn("received SignedVAAWithQuorum message without quorum",
-			zap.String("digest", hash),
-			zap.Any("message", m),
-			zap.Any("vaa", v),
-			zap.Int("wanted_sigs", quorum),
-			zap.Int("got_sigs", len(v.Signatures)),
-		)
-		return
-	}
-
-	// Verify VAA signatures to prevent a DoS attack on our local store.
-	if !v.VerifySignatures(p.gs.Keys) {
-		p.logger.Warn("received SignedVAAWithQuorum message with invalid VAA signatures",
-			zap.String("digest", hash),
-			zap.Any("message", m),
-			zap.Any("vaa", v),
-		)
+	if err := v.Verify(p.gs.Keys); err != nil {
+		p.logger.Warn("dropping SignedVAAWithQuorum message because it failed verification: " + err.Error())
 		return
 	}
 
@@ -286,7 +258,7 @@ func (p *Processor) handleInboundSignedVAAWithQuorum(ctx context.Context, m *gos
 	//  - enough signatures are present for the VAA to reach quorum
 
 	// Check if we already store this VAA
-	_, err = p.db.GetSignedVAABytes(*db.VaaIDFromVAA(v))
+	_, err = p.getSignedVAA(*db.VaaIDFromVAA(v))
 	if err == nil {
 		p.logger.Debug("ignored SignedVAAWithQuorum message for VAA we already store",
 			zap.String("digest", hash),
@@ -307,7 +279,7 @@ func (p *Processor) handleInboundSignedVAAWithQuorum(ctx context.Context, m *gos
 		zap.String("bytes", hex.EncodeToString(m.Vaa)),
 		zap.String("message_id", v.MessageID()))
 
-	if err := p.db.StoreSignedVAA(v); err != nil {
+	if err := p.storeSignedVAA(v); err != nil {
 		p.logger.Error("failed to store signed VAA", zap.Error(err))
 		return
 	}

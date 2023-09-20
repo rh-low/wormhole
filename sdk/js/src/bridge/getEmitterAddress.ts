@@ -1,10 +1,15 @@
-import { PublicKey } from "@solana/web3.js";
+import { PublicKeyInitData } from "@solana/web3.js";
 import { decodeAddress, getApplicationAddress } from "algosdk";
 import { bech32 } from "bech32";
-import { arrayify, BytesLike, Hexable, zeroPad } from "ethers/lib/utils";
-import { importTokenWasm } from "../solana/wasm";
+import {
+  arrayify,
+  sha256,
+  BytesLike,
+  Hexable,
+  zeroPad,
+} from "ethers/lib/utils";
+import { deriveWormholeEmitterKey } from "../solana/wormhole";
 import { uint8ArrayToHex } from "../utils";
-import { sha256 } from  "js-sha256";
 
 export function getEmitterAddressEth(
   contractAddress: number | BytesLike | Hexable
@@ -12,11 +17,10 @@ export function getEmitterAddressEth(
   return Buffer.from(zeroPad(arrayify(contractAddress), 32)).toString("hex");
 }
 
-export async function getEmitterAddressSolana(programAddress: string) {
-  const { emitter_address } = await importTokenWasm();
-  return Buffer.from(
-    zeroPad(new PublicKey(emitter_address(programAddress)).toBytes(), 32)
-  ).toString("hex");
+export async function getEmitterAddressSolana(
+  programAddress: PublicKeyInitData
+) {
+  return deriveWormholeEmitterKey(programAddress).toBuffer().toString("hex");
 }
 
 export async function getEmitterAddressTerra(programAddress: string) {
@@ -24,6 +28,10 @@ export async function getEmitterAddressTerra(programAddress: string) {
     zeroPad(bech32.fromWords(bech32.decode(programAddress).words), 32)
   ).toString("hex");
 }
+
+export const getEmitterAddressInjective = getEmitterAddressTerra;
+
+export const getEmitterAddressXpla = getEmitterAddressTerra;
 
 export function getEmitterAddressAlgorand(appId: bigint): string {
   const appAddr: string = getApplicationAddress(appId);
@@ -33,5 +41,5 @@ export function getEmitterAddressAlgorand(appId: bigint): string {
 }
 
 export function getEmitterAddressNear(programAddress: string): string {
-  return sha256.hex(programAddress);
+  return uint8ArrayToHex(arrayify(sha256(Buffer.from(programAddress, "utf8"))));
 }

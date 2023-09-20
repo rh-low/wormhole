@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/certusone/wormhole/node/pkg/vaa"
+	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -21,6 +21,10 @@ type MessagePublication struct {
 	EmitterChain     vaa.ChainID
 	EmitterAddress   vaa.Address
 	Payload          []byte
+
+	// Unreliable indicates if this message can be reobserved. If a message is considered unreliable it cannot be
+	// reobserved.
+	Unreliable bool
 }
 
 func (msg *MessagePublication) MessageID() []byte {
@@ -100,4 +104,19 @@ func UnmarshalMessagePublication(data []byte) (*MessagePublication, error) {
 	msg.Payload = payload[:n]
 
 	return msg, nil
+}
+
+func (msg *MessagePublication) CreateVAA(gsIndex uint32) *vaa.VAA {
+	return &vaa.VAA{
+		Version:          vaa.SupportedVAAVersion,
+		GuardianSetIndex: gsIndex,
+		Signatures:       nil,
+		Timestamp:        msg.Timestamp,
+		Nonce:            msg.Nonce,
+		EmitterChain:     msg.EmitterChain,
+		EmitterAddress:   msg.EmitterAddress,
+		Payload:          msg.Payload,
+		Sequence:         msg.Sequence,
+		ConsistencyLevel: msg.ConsistencyLevel,
+	}
 }

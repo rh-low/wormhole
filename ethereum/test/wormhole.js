@@ -23,6 +23,11 @@ const actionRecoverChainId = "05"
 
 const ImplementationFullABI = jsonfile.readFileSync("build/contracts/Implementation.json").abi
 
+const fakeChainId = 1337;
+const fakeEvmChainId = 10001;
+
+let lastDeployed;
+
 // Taken from https://medium.com/fluidity/standing-the-time-of-test-b906fcc374a9
 advanceTimeAndBlock = async (time) => {
     await advanceTime(time);
@@ -485,6 +490,61 @@ contract("Wormhole", function () {
         assert.equal(receiverAfter - receiverBefore, 11);
     })
 
+    it("should revert when submitting a new guardian set with the zero address", async function () {
+        const initialized = new web3.eth.Contract(ImplementationFullABI, Wormhole.address);
+        const accounts = await web3.eth.getAccounts();
+
+        const timestamp = 1000;
+        const nonce = 1001;
+        const emitterChainId = testGovernanceChainId;
+        const emitterAddress = testGovernanceContract;
+        const zeroAddress = "0x0000000000000000000000000000000000000000";
+
+        let oldIndex = Number(await initialized.methods.getCurrentGuardianSetIndex().call());
+
+        data = [
+            // Core
+            core,
+            // Action 2 (Guardian Set Upgrade)
+            actionGuardianSetUpgrade,
+            web3.eth.abi.encodeParameter("uint16", testChainId).substring(2 + (64 - 4)),
+            web3.eth.abi.encodeParameter("uint32", oldIndex + 1).substring(2 + (64 - 8)),
+            web3.eth.abi.encodeParameter("uint8", 3).substring(2 + (64 - 2)),
+            web3.eth.abi.encodeParameter("address", testSigner1.address).substring(2 + (64 - 40)),
+            web3.eth.abi.encodeParameter("address", testSigner2.address).substring(2 + (64 - 40)),
+            web3.eth.abi.encodeParameter("address", zeroAddress).substring(2 + (64 - 40)),
+        ].join('')
+
+        const vm = await signAndEncodeVM(
+            timestamp,
+            nonce,
+            emitterChainId,
+            emitterAddress,
+            0,
+            data,
+            [
+                testSigner1PK
+            ],
+            0,
+            2
+        );
+
+        // try to submit a new guardian set including the zero address
+        failed = false;
+        try {
+            await initialized.methods.submitNewGuardianSet("0x" + vm).send({
+                value: 0,
+                from: accounts[0],
+                gasLimit: 1000000
+            });
+        } catch (e) {
+            assert.equal(e.message, "Returned error: VM Exception while processing transaction: revert Invalid key");
+            failed = true;
+        }
+
+        assert.ok(failed);
+    })
+
     it("should accept a new guardian set", async function () {
         const initialized = new web3.eth.Contract(ImplementationFullABI, Wormhole.address);
         const accounts = await web3.eth.getAccounts();
@@ -612,9 +672,10 @@ contract("Wormhole", function () {
         let isUpgraded = await mockImpl.methods.testNewImplementationActive().call();
 
         assert.ok(isUpgraded);
+        lastDeployed = mock;
     })
 
-    it("should revert recover chain ID governance packets on canonical chains (non-forked)", async function () {
+    it("should revert recover chain ID governance packets on canonical chains (non-fork)", async function () {
         const initialized = new web3.eth.Contract(ImplementationFullABI, Wormhole.address);
         const accounts = await web3.eth.getAccounts();
 
@@ -675,7 +736,7 @@ contract("Wormhole", function () {
             web3.eth.abi.encodeParameter("uint16", testChainId).substring(2 + (64 - 4)),
             // Amount
             web3.eth.abi.encodeParameter("uint256", 1).substring(2),
-            // Recipient            
+            // Recipient
             web3.eth.abi.encodeParameter("address", "0x0000000000000000000000000000000000000000").substring(2),
         ].join('')
 
@@ -880,6 +941,178 @@ contract("Wormhole", function () {
         }
     })
 
+    it("should reject smart contract upgrades on forks", async function () {
+        const mockInitialized = new web3.eth.Contract(MockImplementation.abi, Wormhole.address);
+        const initialized = new web3.eth.Contract(ImplementationFullABI, Wormhole.address);
+        const accounts = await web3.eth.getAccounts();
+
+        const mock = await MockImplementation.new();
+
+        const timestamp = 1000;
+        const nonce = 1001;
+        const emitterChainId = testGovernanceChainId;
+        const emitterAddress = testGovernanceContract
+
+        // simulate a fork
+        await mockInitialized.methods.testOverwriteEVMChainId(fakeChainId, fakeEvmChainId).send({
+            value: 0,
+            from: accounts[0],
+            gasLimit: 1000000
+        });
+
+        const chainId = await initialized.methods.chainId().call();
+        assert.equal(chainId, fakeChainId);
+
+        const evmChainId = await initialized.methods.evmChainId().call();
+        assert.equal(evmChainId, fakeEvmChainId);
+
+        data = [
+            // Core
+            core,
+            // Action 1 (Contract Upgrade)
+            actionContractUpgrade,
+            // ChainID
+            web3.eth.abi.encodeParameter("uint16", testChainId).substring(2 + (64 - 4)),
+            // New Contract Address
+            web3.eth.abi.encodeParameter("address", mock.address).substring(2),
+        ].join('')
+
+        const vm = await signAndEncodeVM(
+            timestamp,
+            nonce,
+            emitterChainId,
+            emitterAddress,
+            0,
+            data,
+            [
+                testSigner1PK,
+                testSigner2PK,
+                testSigner3PK
+            ],
+            1,
+            2
+        );
+
+        try {
+            await initialized.methods.submitContractUpgrade("0x" + vm).send({
+                value: 0,
+                from: accounts[0],
+                gasLimit: 1000000
+            });
+
+            assert.fail("governance packet accepted")
+        } catch (e) {
+            assert.equal(e.data[Object.keys(e.data)[0]].reason, "invalid fork")
+        }
+    })
+
+    it("should allow recover chain ID governance packets forks", async function () {
+        const initialized = new web3.eth.Contract(ImplementationFullABI, Wormhole.address);
+        const accounts = await web3.eth.getAccounts();
+
+        const timestamp = 1000;
+        const nonce = 1001;
+        const emitterChainId = testGovernanceChainId;
+        const emitterAddress = testGovernanceContract;
+
+        data = [
+            // Core
+            core,
+            // Action 5 (Recover Chain ID)
+            actionRecoverChainId,
+            // EvmChainID
+            web3.eth.abi.encodeParameter("uint256", testEvmChainId).substring(2),
+            // NewChainID
+            web3.eth.abi.encodeParameter("uint16", testChainId).substring(2 + (64 - 4)),
+        ].join('')
+
+        const vm = await signAndEncodeVM(
+            timestamp,
+            nonce,
+            emitterChainId,
+            emitterAddress,
+            0,
+            data,
+            [
+                testSigner1PK,
+                testSigner2PK,
+                testSigner3PK
+            ],
+            1,
+            2
+        );
+
+        await initialized.methods.submitRecoverChainId("0x" + vm).send({
+            value: 0,
+            from: accounts[0],
+            gasLimit: 1000000
+        });
+
+        const newChainId = await initialized.methods.chainId().call();
+        assert.equal(newChainId, testChainId);
+
+        const newEvmChainId = await initialized.methods.evmChainId().call();
+        assert.equal(newEvmChainId, testEvmChainId);
+    })
+
+    it("should accept smart contract upgrades after chain ID has been recovered", async function () {
+        const initialized = new web3.eth.Contract(ImplementationFullABI, Wormhole.address);
+        const accounts = await web3.eth.getAccounts();
+
+        const mock = await MockImplementation.new();
+
+        const timestamp = 1000;
+        const nonce = 1001;
+        const emitterChainId = testGovernanceChainId;
+        const emitterAddress = testGovernanceContract
+
+        data = [
+            // Core
+            core,
+            // Action 1 (Contract Upgrade)
+            actionContractUpgrade,
+            // ChainID
+            web3.eth.abi.encodeParameter("uint16", testChainId).substring(2 + (64 - 4)),
+            // New Contract Address
+            web3.eth.abi.encodeParameter("address", mock.address).substring(2),
+        ].join('')
+
+        const vm = await signAndEncodeVM(
+            timestamp,
+            nonce,
+            emitterChainId,
+            emitterAddress,
+            0,
+            data,
+            [
+                testSigner1PK,
+                testSigner2PK,
+                testSigner3PK
+            ],
+            1,
+            2
+        );
+
+        let before = await web3.eth.getStorageAt(Wormhole.address, "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc");
+
+        assert.equal(before.toLowerCase(), lastDeployed.address.toLowerCase());
+
+        let set = await initialized.methods.submitContractUpgrade("0x" + vm).send({
+            value: 0,
+            from: accounts[0],
+            gasLimit: 1000000
+        });
+
+        let after = await web3.eth.getStorageAt(Wormhole.address, "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc");
+
+        assert.equal(after.toLowerCase(), mock.address.toLowerCase());
+
+        const mockImpl = new web3.eth.Contract(MockImplementation.abi, Wormhole.address);
+
+        let isUpgraded = await mockImpl.methods.testNewImplementationActive().call();
+
+        assert.ok(isUpgraded);
+    })
 });
 
 const signAndEncodeVM = async function (

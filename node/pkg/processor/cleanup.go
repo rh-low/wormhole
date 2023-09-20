@@ -9,9 +9,9 @@ import (
 	"github.com/certusone/wormhole/node/pkg/db"
 	"github.com/certusone/wormhole/node/pkg/notify/discord"
 	gossipv1 "github.com/certusone/wormhole/node/pkg/proto/gossip/v1"
-	"github.com/certusone/wormhole/node/pkg/vaa"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 
 	"go.uber.org/zap"
 )
@@ -56,6 +56,7 @@ var (
 
 const (
 	settlementTime = time.Second * 30
+	retryTime      = time.Minute * 5
 )
 
 // handleCleanup handles periodic retransmissions and cleanup of observations
@@ -66,14 +67,13 @@ func (p *Processor) handleCleanup(ctx context.Context) {
 	for hash, s := range p.state.signatures {
 		delta := time.Since(s.firstObserved)
 
-		switch {
-		case !s.submitted && s.ourObservation != nil && delta > settlementTime:
+		if !s.submitted && s.ourObservation != nil && delta > settlementTime {
 			// Expire pending VAAs post settlement time if we have a stored quorum VAA.
 			//
 			// This occurs when we observed a message after the cluster has already reached
 			// consensus on it, causing us to never achieve quorum.
 			if ourVaa, ok := s.ourObservation.(*VAA); ok {
-				if _, err := p.db.GetSignedVAABytes(*db.VaaIDFromVAA(&ourVaa.VAA)); err == nil {
+				if _, err := p.getSignedVAA(*db.VaaIDFromVAA(&ourVaa.VAA)); err == nil {
 					// If we have a stored quorum VAA, we can safely expire the state.
 					//
 					// This is a rare case, and we can safely expire the state, since we
@@ -81,7 +81,7 @@ func (p *Processor) handleCleanup(ctx context.Context) {
 					p.logger.Info("Expiring late VAA", zap.String("digest", hash), zap.Duration("delta", delta))
 					aggregationStateLate.Inc()
 					delete(p.state.signatures, hash)
-					break
+					continue
 				} else if err != db.ErrVAANotFound {
 					p.logger.Error("failed to look up VAA in database",
 						zap.String("digest", hash),
@@ -89,8 +89,9 @@ func (p *Processor) handleCleanup(ctx context.Context) {
 					)
 				}
 			}
-			fallthrough
+		}
 
+		switch {
 		case !s.settled && delta > settlementTime:
 			// After 30 seconds, the observation is considered settled - it's unlikely that more observations will
 			// arrive, barring special circumstances. This is a better time to count misses than submission,
@@ -106,7 +107,7 @@ func (p *Processor) handleCleanup(ctx context.Context) {
 			}
 
 			hasSigs := len(s.signatures)
-			wantSigs := CalculateQuorum(len(gs.Keys))
+			wantSigs := vaa.CalculateQuorum(len(gs.Keys))
 			quorum := hasSigs >= wantSigs
 
 			var chain vaa.ChainID
@@ -175,14 +176,21 @@ func (p *Processor) handleCleanup(ctx context.Context) {
 			p.logger.Info("expiring unsubmitted observation after exhausting retries", zap.String("digest", hash), zap.Duration("delta", delta))
 			delete(p.state.signatures, hash)
 			aggregationStateTimeout.Inc()
-		case !s.submitted && delta.Minutes() >= 5:
+		case !s.submitted && delta.Minutes() >= 5 && time.Since(s.lastRetry) >= retryTime:
 			// Poor observation has been unsubmitted for five minutes - clearly, something went wrong.
-			// If we have previously submitted an observation, we can make another attempt to get it over
-			// the finish line by sending a re-observation request to the network and rebroadcasting our
+			// If we have previously submitted an observation, and it was reliable, we can make another attempt to get
+			// it over the finish line by sending a re-observation request to the network and rebroadcasting our
 			// sig. If we do not have an observation, it means we either never observed it, or it got
 			// revived by a malfunctioning guardian node, in which case, we can't do anything about it
 			// and just delete it to keep our state nice and lean.
 			if s.ourMsg != nil {
+				// Unreliable observations cannot be resubmitted and can be considered failed after 5 minutes
+				if !s.ourObservation.IsReliable() {
+					p.logger.Info("expiring unsubmitted unreliable observation", zap.String("digest", hash), zap.Duration("delta", delta))
+					delete(p.state.signatures, hash)
+					aggregationStateTimeout.Inc()
+					break
+				}
 				p.logger.Info("resubmitting observation",
 					zap.String("digest", hash),
 					zap.Duration("delta", delta),
@@ -196,13 +204,14 @@ func (p *Processor) handleCleanup(ctx context.Context) {
 				}
 				p.sendC <- s.ourMsg
 				s.retryCount += 1
+				s.lastRetry = time.Now()
 				aggregationStateRetries.Inc()
 			} else {
 				// For nil state entries, we log the quorum to determine whether the
 				// network reached consensus without us. We don't know the correct guardian
 				// set, so we simply use the most recent one.
 				hasSigs := len(s.signatures)
-				wantSigs := CalculateQuorum(len(p.gs.Keys))
+				wantSigs := vaa.CalculateQuorum(len(p.gs.Keys))
 
 				p.logger.Info("expiring unsubmitted nil observation",
 					zap.String("digest", hash),
@@ -214,6 +223,14 @@ func (p *Processor) handleCleanup(ctx context.Context) {
 				delete(p.state.signatures, hash)
 				aggregationStateUnobserved.Inc()
 			}
+		}
+	}
+
+	// Clean up old pythnet VAAs.
+	oldestTime := time.Now().Add(-time.Hour)
+	for key, pe := range p.pythnetVaas {
+		if pe.updateTime.Before(oldestTime) {
+			delete(p.pythnetVaas, key)
 		}
 	}
 }

@@ -4,6 +4,9 @@ import {
   createWrappedOnSolana,
   createWrappedOnTerra,
   createWrappedOnNear,
+  submitVAAOnInjective,
+  createWrappedOnXpla,
+  createWrappedOnAptos,
 } from ".";
 import { Bridge__factory } from "../ethers-contracts";
 
@@ -21,8 +24,14 @@ export async function updateWrappedOnEth(
 
 export const updateWrappedOnTerra = createWrappedOnTerra;
 
+export const updateWrappedOnInjective = submitVAAOnInjective;
+
+export const updateWrappedOnXpla = createWrappedOnXpla;
+
 export const updateWrappedOnSolana = createWrappedOnSolana;
 
 export const updateWrappedOnAlgorand = createWrappedOnAlgorand;
 
 export const updateWrappedOnNear = createWrappedOnNear;
+
+export const updateWrappedOnAptos = createWrappedOnAptos;

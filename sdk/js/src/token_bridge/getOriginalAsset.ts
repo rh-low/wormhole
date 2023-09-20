@@ -1,25 +1,37 @@
-const sha256 = require("js-sha256");
-
-import { Connection, PublicKey } from "@solana/web3.js";
-import { LCDClient } from "@terra-money/terra.js";
+import { ChainGrpcWasmApi } from "@injectivelabs/sdk-ts";
+import {
+  Commitment,
+  Connection,
+  PublicKey,
+  PublicKeyInitData,
+} from "@solana/web3.js";
+import { LCDClient as TerraLCDClient } from "@terra-money/terra.js";
 import { Algodv2 } from "algosdk";
 import { ethers } from "ethers";
-import { arrayify, zeroPad } from "ethers/lib/utils";
+import { arrayify, sha256, zeroPad } from "ethers/lib/utils";
 import { decodeLocalState } from "../algorand";
-import { buildTokenId } from "../cosmwasm/address";
+import { buildTokenId, isNativeCosmWasmDenom } from "../cosmwasm/address";
 import { TokenImplementation__factory } from "../ethers-contracts";
-import { importTokenWasm } from "../solana/wasm";
-import { buildNativeId, isNativeDenom } from "../terra";
+import { buildNativeId } from "../terra";
 import { canonicalAddress } from "../cosmos";
 import {
+  assertChain,
   ChainId,
   ChainName,
   CHAIN_ID_ALGORAND,
+  CHAIN_ID_APTOS,
   CHAIN_ID_NEAR,
+  CHAIN_ID_INJECTIVE,
   CHAIN_ID_SOLANA,
   CHAIN_ID_TERRA,
   coalesceChainId,
+  CosmWasmChainId,
+  CosmWasmChainName,
   hexToUint8Array,
+  coalesceCosmWasmChainId,
+  callFunctionNear,
+  isValidAptosType,
+  parseSmartContractStateResponse,
 } from "../utils";
 import { safeBigIntToNumber } from "../utils/bigint";
 import {
@@ -27,7 +39,12 @@ import {
   getIsWrappedAssetEth,
   getIsWrappedAssetNear,
 } from "./getIsWrappedAsset";
-import { Account as nearAccount } from "near-api-js";
+import { Provider } from "near-api-js/lib/providers";
+import { LCDClient as XplaLCDClient } from "@xpla/xpla.js";
+import { AptosClient } from "aptos";
+import { OriginInfo } from "../aptos/types";
+import { sha3_256 } from "js-sha3";
+import { getWrappedMeta } from "../solana/tokenBridge";
 
 // TODO: remove `as ChainId` and return number in next minor version as we can't ensure it will match our type definition
 export interface WormholeWrappedInfo {
@@ -75,26 +92,74 @@ export async function getOriginalAssetEth(
 }
 
 export async function getOriginalAssetTerra(
-  client: LCDClient,
+  client: TerraLCDClient,
   wrappedAddress: string
 ) {
   return getOriginalAssetCosmWasm(client, wrappedAddress, CHAIN_ID_TERRA);
 }
 
-export async function getOriginalAssetCosmWasm(
-  client: LCDClient,
+/**
+ * Returns information about the asset
+ * @param wrappedAddress Address of the asset in wormhole wrapped format (hex string)
+ * @param client WASM api client
+ * @returns Information about the asset
+ */
+export async function getOriginalAssetInjective(
   wrappedAddress: string,
-  lookupChain: ChainId | ChainName
+  client: ChainGrpcWasmApi
 ): Promise<WormholeWrappedInfo> {
-  const chainId = coalesceChainId(lookupChain);
-  if (isNativeDenom(wrappedAddress)) {
+  const chainId = CHAIN_ID_INJECTIVE;
+  if (isNativeCosmWasmDenom(chainId, wrappedAddress)) {
+    return {
+      isWrapped: false,
+      chainId,
+      assetAddress: hexToUint8Array(buildTokenId(chainId, wrappedAddress)),
+    };
+  }
+  try {
+    const response = await client.fetchSmartContractState(
+      wrappedAddress,
+      Buffer.from(
+        JSON.stringify({
+          wrapped_asset_info: {},
+        })
+      ).toString("base64")
+    );
+    const parsed = parseSmartContractStateResponse(response);
+    return {
+      isWrapped: true,
+      chainId: parsed.asset_chain,
+      assetAddress: new Uint8Array(Buffer.from(parsed.asset_address, "base64")),
+    };
+  } catch {}
+  return {
+    isWrapped: false,
+    chainId: chainId,
+    assetAddress: hexToUint8Array(buildTokenId(chainId, wrappedAddress)),
+  };
+}
+
+export async function getOriginalAssetXpla(
+  client: XplaLCDClient,
+  wrappedAddress: string
+) {
+  return getOriginalAssetCosmWasm(client, wrappedAddress, "xpla");
+}
+
+export async function getOriginalAssetCosmWasm(
+  client: TerraLCDClient | XplaLCDClient,
+  wrappedAddress: string,
+  lookupChain: CosmWasmChainId | CosmWasmChainName
+): Promise<WormholeWrappedInfo> {
+  const chainId = coalesceCosmWasmChainId(lookupChain);
+  if (isNativeCosmWasmDenom(chainId, wrappedAddress)) {
     return {
       isWrapped: false,
       chainId: chainId,
       assetAddress:
         chainId === CHAIN_ID_TERRA
           ? buildNativeId(wrappedAddress)
-          : hexToUint8Array(buildTokenId(wrappedAddress)),
+          : hexToUint8Array(buildTokenId(chainId, wrappedAddress)),
     };
   }
   try {
@@ -121,7 +186,7 @@ export async function getOriginalAssetCosmWasm(
     assetAddress:
       chainId === CHAIN_ID_TERRA
         ? zeroPad(canonicalAddress(wrappedAddress), 32)
-        : hexToUint8Array(buildTokenId(wrappedAddress)),
+        : hexToUint8Array(buildTokenId(chainId, wrappedAddress)),
   };
 }
 
@@ -130,47 +195,50 @@ export async function getOriginalAssetCosmWasm(
  * @param connection
  * @param tokenBridgeAddress
  * @param mintAddress
+ * @param [commitment]
  * @returns
  */
-export async function getOriginalAssetSol(
+export async function getOriginalAssetSolana(
   connection: Connection,
-  tokenBridgeAddress: string,
-  mintAddress: string
+  tokenBridgeAddress: PublicKeyInitData,
+  mintAddress: PublicKeyInitData,
+  commitment?: Commitment
 ): Promise<WormholeWrappedInfo> {
-  if (mintAddress) {
-    // TODO: share some of this with getIsWrappedAssetSol, like a getWrappedMetaAccountAddress or something
-    const { parse_wrapped_meta, wrapped_meta_address } =
-      await importTokenWasm();
-    const wrappedMetaAddress = wrapped_meta_address(
-      tokenBridgeAddress,
-      new PublicKey(mintAddress).toBytes()
-    );
-    const wrappedMetaAddressPK = new PublicKey(wrappedMetaAddress);
-    const wrappedMetaAccountInfo = await connection.getAccountInfo(
-      wrappedMetaAddressPK
-    );
-    if (wrappedMetaAccountInfo) {
-      const parsed = parse_wrapped_meta(wrappedMetaAccountInfo.data);
-      return {
-        isWrapped: true,
-        chainId: parsed.chain,
-        assetAddress: parsed.token_address,
-      };
-    }
-  }
   try {
+    const mint = new PublicKey(mintAddress);
+
+    return getWrappedMeta(
+      connection,
+      tokenBridgeAddress,
+      mintAddress,
+      commitment
+    )
+      .catch((_) => null)
+      .then((meta) => {
+        if (meta === null) {
+          return {
+            isWrapped: false,
+            chainId: CHAIN_ID_SOLANA,
+            assetAddress: mint.toBytes(),
+          };
+        } else {
+          return {
+            isWrapped: true,
+            chainId: meta.chain as ChainId,
+            assetAddress: Uint8Array.from(meta.tokenAddress),
+          };
+        }
+      });
+  } catch (_) {
     return {
       isWrapped: false,
       chainId: CHAIN_ID_SOLANA,
-      assetAddress: new PublicKey(mintAddress).toBytes(),
+      assetAddress: new Uint8Array(32),
     };
-  } catch (e) {}
-  return {
-    isWrapped: false,
-    chainId: CHAIN_ID_SOLANA,
-    assetAddress: new Uint8Array(32),
-  };
+  }
 }
+
+export const getOriginalAssetSol = getOriginalAssetSolana;
 
 /**
  * Returns an origin chain and asset address on {originChain} for a provided Wormhole wrapped address
@@ -208,29 +276,88 @@ export async function getOriginalAssetAlgorand(
 }
 
 export async function getOriginalAssetNear(
-  client: nearAccount,
+  provider: Provider,
   tokenAccount: string,
   assetAccount: string
 ): Promise<WormholeWrappedInfo> {
-  let retVal: WormholeWrappedInfo = {
+  const retVal: WormholeWrappedInfo = {
     isWrapped: false,
     chainId: CHAIN_ID_NEAR,
     assetAddress: new Uint8Array(),
   };
-  retVal.isWrapped = await getIsWrappedAssetNear(tokenAccount, assetAccount);
+  retVal.isWrapped = getIsWrappedAssetNear(tokenAccount, assetAccount);
   if (!retVal.isWrapped) {
-    retVal.assetAddress = sha256.sha256.hex(
-      Buffer.from(assetAccount).toString("hex")
-    );
+    retVal.assetAddress = assetAccount
+      ? arrayify(sha256(Buffer.from(assetAccount)))
+      : zeroPad(arrayify("0x"), 32);
     return retVal;
   }
 
-  let buf = await client.viewFunction(tokenAccount, "get_original_asset", {
-    token: assetAccount,
-  });
+  const buf = await callFunctionNear(
+    provider,
+    tokenAccount,
+    "get_original_asset",
+    {
+      token: assetAccount,
+    }
+  );
 
   retVal.chainId = buf[1];
   retVal.assetAddress = hexToUint8Array(buf[0]);
 
   return retVal;
+}
+
+/**
+ * Gets the origin chain ID and address of an asset on Aptos, given its fully qualified type.
+ * @param client Client used to transfer data to/from Aptos node
+ * @param tokenBridgeAddress Address of token bridge
+ * @param fullyQualifiedType Fully qualified type of asset
+ * @returns Original chain ID and address of asset
+ */
+export async function getOriginalAssetAptos(
+  client: AptosClient,
+  tokenBridgeAddress: string,
+  fullyQualifiedType: string
+): Promise<WormholeWrappedInfo> {
+  if (!isValidAptosType(fullyQualifiedType)) {
+    throw new Error("Invalid qualified type");
+  }
+
+  let originInfo: OriginInfo | undefined;
+  try {
+    originInfo = (
+      await client.getAccountResource(
+        fullyQualifiedType.split("::")[0],
+        `${tokenBridgeAddress}::state::OriginInfo`
+      )
+    ).data as OriginInfo;
+  } catch {
+    return {
+      isWrapped: false,
+      chainId: CHAIN_ID_APTOS,
+      assetAddress: hexToUint8Array(sha3_256(fullyQualifiedType)),
+    };
+  }
+
+  if (!!originInfo) {
+    // wrapped asset
+    const chainId = parseInt(originInfo.token_chain.number);
+    assertChain(chainId);
+    const assetAddress = hexToUint8Array(
+      originInfo.token_address.external_address.substring(2)
+    );
+    return {
+      isWrapped: true,
+      chainId,
+      assetAddress,
+    };
+  } else {
+    // native asset
+    return {
+      isWrapped: false,
+      chainId: CHAIN_ID_APTOS,
+      assetAddress: hexToUint8Array(sha3_256(fullyQualifiedType)),
+    };
+  }
 }

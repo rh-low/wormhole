@@ -27,7 +27,7 @@ import (
 	"github.com/certusone/wormhole/node/pkg/common"
 	nodev1 "github.com/certusone/wormhole/node/pkg/proto/node/v1"
 	"github.com/certusone/wormhole/node/pkg/supervisor"
-	"github.com/certusone/wormhole/node/pkg/vaa"
+	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 )
 
 type nodePrivilegedService struct {
@@ -482,6 +482,19 @@ func (s *nodePrivilegedService) ChainGovernorResetReleaseTimer(ctx context.Conte
 	}
 
 	return &nodev1.ChainGovernorResetReleaseTimerResponse{
+		Response: resp,
+	}, nil
+}
+
+func (s *nodePrivilegedService) PurgePythNetVaas(ctx context.Context, req *nodev1.PurgePythNetVaasRequest) (*nodev1.PurgePythNetVaasResponse, error) {
+	prefix := db.VAAID{EmitterChain: vaa.ChainIDPythNet}
+	oldestTime := time.Now().Add(-time.Hour * 24 * time.Duration(req.DaysOld))
+	resp, err := s.db.PurgeVaas(prefix, oldestTime, req.LogOnly)
+	if err != nil {
+		return nil, err
+	}
+
+	return &nodev1.PurgePythNetVaasResponse{
 		Response: resp,
 	}, nil
 }

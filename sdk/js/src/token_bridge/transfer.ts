@@ -1,12 +1,22 @@
-import { AccountLayout, Token, TOKEN_PROGRAM_ID, u64 } from "@solana/spl-token";
 import {
+  ACCOUNT_SIZE,
+  createCloseAccountInstruction,
+  createInitializeAccountInstruction,
+  getMinimumBalanceForRentExemptAccount,
+  NATIVE_MINT,
+  TOKEN_PROGRAM_ID,
+} from "@solana/spl-token";
+import {
+  Commitment,
   Connection,
   Keypair,
   PublicKey,
+  PublicKeyInitData,
   SystemProgram,
   Transaction as SolanaTransaction,
 } from "@solana/web3.js";
 import { MsgExecuteContract } from "@terra-money/terra.js";
+import { MsgExecuteContract as MsgExecuteContractInjective } from "@injectivelabs/sdk-ts";
 import {
   Algodv2,
   bigIntToBytes,
@@ -18,8 +28,10 @@ import {
   SuggestedParams,
   Transaction as AlgorandTransaction,
 } from "algosdk";
-import { BigNumber, ethers, Overrides, PayableOverrides } from "ethers";
-import { isNativeDenom } from "..";
+import { ethers, Overrides, PayableOverrides } from "ethers";
+import BN from "bn.js";
+import { isNativeDenom } from "../terra";
+import { getIsWrappedAssetNear } from "..";
 import {
   assetOptinCheck,
   getMessageFee,
@@ -31,24 +43,34 @@ import {
   Bridge__factory,
   TokenImplementation__factory,
 } from "../ethers-contracts";
-import { getBridgeFeeIx, ixFromRust } from "../solana";
-import { importTokenWasm } from "../solana/wasm";
 import {
-  CHAIN_ID_SOLANA,
+  createApproveAuthoritySignerInstruction,
+  createTransferNativeInstruction,
+  createTransferNativeWithPayloadInstruction,
+  createTransferWrappedInstruction,
+  createTransferWrappedWithPayloadInstruction,
+} from "../solana/tokenBridge";
+import {
   ChainId,
   ChainName,
-  WSOL_ADDRESS,
   coalesceChainId,
   createNonce,
   hexToUint8Array,
+  safeBigIntToNumber,
   textToUint8Array,
   uint8ArrayToHex,
+  CHAIN_ID_SOLANA,
+  callFunctionNear,
 } from "../utils";
-import { safeBigIntToNumber } from "../utils/bigint";
-import { Account as nearAccount, providers as nearProviders } from "near-api-js";
-import { parseSequenceFromLogNear } from "../bridge/parseSequenceFromLog";
-
-const BN = require("bn.js");
+import { isNativeDenomInjective, isNativeDenomXpla } from "../cosmwasm";
+import { Types } from "aptos";
+import { FunctionCallOptions } from "near-api-js/lib/account";
+import { Provider } from "near-api-js/lib/providers";
+import { MsgExecuteContract as XplaMsgExecuteContract } from "@xpla/xpla.js";
+import {
+  transferTokens as transferTokensAptos,
+  transferTokensWithPayload,
+} from "../aptos";
 
 export async function getAllowanceEth(
   tokenBridgeAddress: string,
@@ -239,20 +261,200 @@ export async function transferFromTerra(
       ];
 }
 
-export async function transferNativeSol(
-  connection: Connection,
-  bridgeAddress: string,
+/**
+ * Creates the necessary messages to transfer an asset
+ * @param walletAddress Address of the Inj wallet
+ * @param tokenBridgeAddress Address of the token bridge contract
+ * @param tokenAddress Address of the token being transferred
+ * @param amount Amount of token to be transferred
+ * @param recipientChain Destination chain
+ * @param recipientAddress Destination wallet address
+ * @param relayerFee Relayer fee
+ * @param payload Optional payload
+ * @returns Transfer messages to be sent on chain
+ */
+export async function transferFromInjective(
+  walletAddress: string,
   tokenBridgeAddress: string,
-  payerAddress: string,
-  amount: BigInt,
-  targetAddress: Uint8Array,
-  targetChain: ChainId | ChainName,
-  relayerFee: BigInt = BigInt(0),
+  tokenAddress: string,
+  amount: string,
+  recipientChain: ChainId | ChainName,
+  recipientAddress: Uint8Array,
+  relayerFee: string = "0",
   payload: Uint8Array | null = null
 ) {
-  //https://github.com/solana-labs/solana-program-library/blob/master/token/js/client/token.js
-  const rentBalance = await Token.getMinBalanceRentForExemptAccount(connection);
-  const mintPublicKey = new PublicKey(WSOL_ADDRESS);
+  const recipientChainId = coalesceChainId(recipientChain);
+  const nonce = Math.round(Math.random() * 100000);
+  const isNativeAsset = isNativeDenomInjective(tokenAddress);
+  const mk_action: string = payload
+    ? "initiate_transfer_with_payload"
+    : "initiate_transfer";
+  const mk_initiate_transfer = (info: object) =>
+    payload
+      ? {
+          asset: {
+            amount,
+            info,
+          },
+          recipient_chain: recipientChainId,
+          recipient: Buffer.from(recipientAddress).toString("base64"),
+          fee: relayerFee,
+          nonce,
+          payload,
+        }
+      : {
+          asset: {
+            amount,
+            info,
+          },
+          recipient_chain: recipientChainId,
+          recipient: Buffer.from(recipientAddress).toString("base64"),
+          fee: relayerFee,
+          nonce,
+        };
+  return isNativeAsset
+    ? [
+        MsgExecuteContractInjective.fromJSON({
+          contractAddress: tokenBridgeAddress,
+          sender: walletAddress,
+          msg: {},
+          action: "deposit_tokens",
+          funds: { denom: tokenAddress, amount },
+        }),
+        MsgExecuteContractInjective.fromJSON({
+          contractAddress: tokenBridgeAddress,
+          sender: walletAddress,
+          msg: mk_initiate_transfer({ native_token: { denom: tokenAddress } }),
+          action: mk_action,
+        }),
+      ]
+    : [
+        MsgExecuteContractInjective.fromJSON({
+          contractAddress: tokenAddress,
+          sender: walletAddress,
+          msg: {
+            spender: tokenBridgeAddress,
+            amount,
+            expires: {
+              never: {},
+            },
+          },
+          action: "increase_allowance",
+        }),
+        MsgExecuteContractInjective.fromJSON({
+          contractAddress: tokenBridgeAddress,
+          sender: walletAddress,
+          msg: mk_initiate_transfer({ token: { contract_addr: tokenAddress } }),
+          action: mk_action,
+        }),
+      ];
+}
+
+export function transferFromXpla(
+  walletAddress: string,
+  tokenBridgeAddress: string,
+  tokenAddress: string,
+  amount: string,
+  recipientChain: ChainId | ChainName,
+  recipientAddress: Uint8Array,
+  relayerFee: string = "0",
+  payload: Uint8Array | null = null
+): XplaMsgExecuteContract[] {
+  const recipientChainId = coalesceChainId(recipientChain);
+  const nonce = Math.round(Math.random() * 100000);
+  const isNativeAsset = isNativeDenomXpla(tokenAddress);
+  const createInitiateTransfer = (info: object) =>
+    payload
+      ? {
+          initiate_transfer_with_payload: {
+            asset: {
+              amount,
+              info,
+            },
+            recipient_chain: recipientChainId,
+            recipient: Buffer.from(recipientAddress).toString("base64"),
+            fee: relayerFee,
+            nonce,
+            payload,
+          },
+        }
+      : {
+          initiate_transfer: {
+            asset: {
+              amount,
+              info,
+            },
+            recipient_chain: recipientChainId,
+            recipient: Buffer.from(recipientAddress).toString("base64"),
+            fee: relayerFee,
+            nonce,
+          },
+        };
+  return isNativeAsset
+    ? [
+        new XplaMsgExecuteContract(
+          walletAddress,
+          tokenBridgeAddress,
+          {
+            deposit_tokens: {},
+          },
+          { [tokenAddress]: amount }
+        ),
+        new XplaMsgExecuteContract(
+          walletAddress,
+          tokenBridgeAddress,
+          createInitiateTransfer({
+            native_token: {
+              denom: tokenAddress,
+            },
+          }),
+          {}
+        ),
+      ]
+    : [
+        new XplaMsgExecuteContract(
+          walletAddress,
+          tokenAddress,
+          {
+            increase_allowance: {
+              spender: tokenBridgeAddress,
+              amount: amount,
+              expires: {
+                never: {},
+              },
+            },
+          },
+          {}
+        ),
+        new XplaMsgExecuteContract(
+          walletAddress,
+          tokenBridgeAddress,
+          createInitiateTransfer({
+            token: {
+              contract_addr: tokenAddress,
+            },
+          }),
+          {}
+        ),
+      ];
+}
+
+export async function transferNativeSol(
+  connection: Connection,
+  bridgeAddress: PublicKeyInitData,
+  tokenBridgeAddress: PublicKeyInitData,
+  payerAddress: PublicKeyInitData,
+  amount: bigint,
+  targetAddress: Uint8Array | Buffer,
+  targetChain: ChainId | ChainName,
+  relayerFee: bigint = BigInt(0),
+  payload: Uint8Array | Buffer | null = null,
+  commitment?: Commitment
+) {
+  const rentBalance = await getMinimumBalanceForRentExemptAccount(
+    connection,
+    commitment
+  );
   const payerPublicKey = new PublicKey(payerAddress);
   const ancillaryKeypair = Keypair.generate();
 
@@ -261,211 +463,190 @@ export async function transferNativeSol(
     fromPubkey: payerPublicKey,
     newAccountPubkey: ancillaryKeypair.publicKey,
     lamports: rentBalance, //spl token accounts need rent exemption
-    space: AccountLayout.span,
+    space: ACCOUNT_SIZE,
     programId: TOKEN_PROGRAM_ID,
   });
 
   //Send in the amount of SOL which we want converted to wSOL
   const initialBalanceTransferIx = SystemProgram.transfer({
     fromPubkey: payerPublicKey,
-    lamports: Number(amount),
+    lamports: amount,
     toPubkey: ancillaryKeypair.publicKey,
   });
   //Initialize the account as a WSOL account, with the original payerAddress as owner
-  const initAccountIx = await Token.createInitAccountInstruction(
-    TOKEN_PROGRAM_ID,
-    mintPublicKey,
+  const initAccountIx = createInitializeAccountInstruction(
     ancillaryKeypair.publicKey,
+    NATIVE_MINT,
     payerPublicKey
   );
 
   //Normal approve & transfer instructions, except that the wSOL is sent from the ancillary account.
-  const {
-    transfer_native_ix,
-    transfer_native_with_payload_ix,
-    approval_authority_address,
-  } = await importTokenWasm();
-  const nonce = createNonce().readUInt32LE(0);
-  const transferIx = await getBridgeFeeIx(
-    connection,
-    bridgeAddress,
-    payerAddress
-  );
-  const approvalIx = Token.createApproveInstruction(
-    TOKEN_PROGRAM_ID,
+  const approvalIx = createApproveAuthoritySignerInstruction(
+    tokenBridgeAddress,
     ancillaryKeypair.publicKey,
-    new PublicKey(approval_authority_address(tokenBridgeAddress)),
-    payerPublicKey, //owner
-    [],
-    new u64(amount.toString(16), 16)
+    payerPublicKey,
+    amount
   );
-  let messageKey = Keypair.generate();
 
-  const ix = ixFromRust(
+  const message = Keypair.generate();
+  const nonce = createNonce().readUInt32LE(0);
+  const tokenBridgeTransferIx =
     payload !== null
-      ? transfer_native_with_payload_ix(
+      ? createTransferNativeWithPayloadInstruction(
           tokenBridgeAddress,
           bridgeAddress,
           payerAddress,
-          messageKey.publicKey.toString(),
-          ancillaryKeypair.publicKey.toString(),
-          WSOL_ADDRESS,
+          message.publicKey,
+          ancillaryKeypair.publicKey,
+          NATIVE_MINT,
           nonce,
-          amount.valueOf(),
-          targetAddress,
+          amount,
+          Buffer.from(targetAddress),
           coalesceChainId(targetChain),
           payload
         )
-      : transfer_native_ix(
+      : createTransferNativeInstruction(
           tokenBridgeAddress,
           bridgeAddress,
           payerAddress,
-          messageKey.publicKey.toString(),
-          ancillaryKeypair.publicKey.toString(),
-          WSOL_ADDRESS,
+          message.publicKey,
+          ancillaryKeypair.publicKey,
+          NATIVE_MINT,
           nonce,
-          amount.valueOf(),
-          relayerFee.valueOf(),
-          targetAddress,
+          amount,
+          relayerFee,
+          Buffer.from(targetAddress),
           coalesceChainId(targetChain)
-        )
-  );
+        );
 
   //Close the ancillary account for cleanup. Payer address receives any remaining funds
-  const closeAccountIx = Token.createCloseAccountInstruction(
-    TOKEN_PROGRAM_ID,
+  const closeAccountIx = createCloseAccountInstruction(
     ancillaryKeypair.publicKey, //account to close
     payerPublicKey, //Remaining funds destination
-    payerPublicKey, //authority
-    []
+    payerPublicKey //authority
   );
 
-  const { blockhash } = await connection.getRecentBlockhash();
+  const { blockhash } = await connection.getLatestBlockhash(commitment);
   const transaction = new SolanaTransaction();
   transaction.recentBlockhash = blockhash;
-  transaction.feePayer = new PublicKey(payerAddress);
-  transaction.add(createAncillaryAccountIx);
-  transaction.add(initialBalanceTransferIx);
-  transaction.add(initAccountIx);
-  transaction.add(transferIx, approvalIx, ix);
-  transaction.add(closeAccountIx);
-  transaction.partialSign(messageKey);
-  transaction.partialSign(ancillaryKeypair);
+  transaction.feePayer = payerPublicKey;
+  transaction.add(
+    createAncillaryAccountIx,
+    initialBalanceTransferIx,
+    initAccountIx,
+    approvalIx,
+    tokenBridgeTransferIx,
+    closeAccountIx
+  );
+  transaction.partialSign(message, ancillaryKeypair);
   return transaction;
 }
 
 export async function transferFromSolana(
   connection: Connection,
-  bridgeAddress: string,
-  tokenBridgeAddress: string,
-  payerAddress: string,
-  fromAddress: string,
-  mintAddress: string,
-  amount: BigInt,
-  targetAddress: Uint8Array,
+  bridgeAddress: PublicKeyInitData,
+  tokenBridgeAddress: PublicKeyInitData,
+  payerAddress: PublicKeyInitData,
+  fromAddress: PublicKeyInitData,
+  mintAddress: PublicKeyInitData,
+  amount: bigint,
+  targetAddress: Uint8Array | Buffer,
   targetChain: ChainId | ChainName,
-  originAddress?: Uint8Array,
+  originAddress?: Uint8Array | Buffer,
   originChain?: ChainId | ChainName,
-  fromOwnerAddress?: string,
-  relayerFee: BigInt = BigInt(0),
-  payload: Uint8Array | null = null
+  fromOwnerAddress?: PublicKeyInitData,
+  relayerFee: bigint = BigInt(0),
+  payload: Uint8Array | Buffer | null = null,
+  commitment?: Commitment
 ) {
   const originChainId: ChainId | undefined = originChain
     ? coalesceChainId(originChain)
     : undefined;
+  if (fromOwnerAddress === undefined) {
+    fromOwnerAddress = payerAddress;
+  }
   const nonce = createNonce().readUInt32LE(0);
-  const transferIx = await getBridgeFeeIx(
-    connection,
-    bridgeAddress,
-    payerAddress
+  const approvalIx = createApproveAuthoritySignerInstruction(
+    tokenBridgeAddress,
+    fromAddress,
+    fromOwnerAddress,
+    amount
   );
-  const {
-    transfer_native_ix,
-    transfer_wrapped_ix,
-    transfer_native_with_payload_ix,
-    transfer_wrapped_with_payload_ix,
-    approval_authority_address,
-  } = await importTokenWasm();
-  const approvalIx = Token.createApproveInstruction(
-    TOKEN_PROGRAM_ID,
-    new PublicKey(fromAddress),
-    new PublicKey(approval_authority_address(tokenBridgeAddress)),
-    new PublicKey(fromOwnerAddress || payerAddress),
-    [],
-    new u64(amount.toString(16), 16)
-  );
-  let messageKey = Keypair.generate();
+  const message = Keypair.generate();
   const isSolanaNative =
     originChainId === undefined || originChainId === CHAIN_ID_SOLANA;
   if (!isSolanaNative && !originAddress) {
-    throw new Error("originAddress is required when specifying originChain");
+    return Promise.reject(
+      "originAddress is required when specifying originChain"
+    );
   }
-  const ix = ixFromRust(
-    isSolanaNative
-      ? payload !== null
-        ? transfer_native_with_payload_ix(
-            tokenBridgeAddress,
-            bridgeAddress,
-            payerAddress,
-            messageKey.publicKey.toString(),
-            fromAddress,
-            mintAddress,
-            nonce,
-            amount.valueOf(),
-            targetAddress,
-            coalesceChainId(targetChain),
-            payload
-          )
-        : transfer_native_ix(
-            tokenBridgeAddress,
-            bridgeAddress,
-            payerAddress,
-            messageKey.publicKey.toString(),
-            fromAddress,
-            mintAddress,
-            nonce,
-            amount.valueOf(),
-            relayerFee.valueOf(),
-            targetAddress,
-            coalesceChainId(targetChain)
-          )
-      : payload !== null
-      ? transfer_wrapped_with_payload_ix(
+  const tokenBridgeTransferIx = isSolanaNative
+    ? payload !== null
+      ? createTransferNativeWithPayloadInstruction(
           tokenBridgeAddress,
           bridgeAddress,
           payerAddress,
-          messageKey.publicKey.toString(),
+          message.publicKey,
           fromAddress,
-          fromOwnerAddress || payerAddress,
-          originChainId as number, // checked by isSolanaNative
-          originAddress as Uint8Array, // checked by throw
+          mintAddress,
           nonce,
-          amount.valueOf(),
+          amount,
           targetAddress,
           coalesceChainId(targetChain),
           payload
         )
-      : transfer_wrapped_ix(
+      : createTransferNativeInstruction(
           tokenBridgeAddress,
           bridgeAddress,
           payerAddress,
-          messageKey.publicKey.toString(),
+          message.publicKey,
           fromAddress,
-          fromOwnerAddress || payerAddress,
-          originChainId as number, // checked by isSolanaNative
-          originAddress as Uint8Array, // checked by throw
+          mintAddress,
           nonce,
-          amount.valueOf(),
-          relayerFee.valueOf(),
+          amount,
+          relayerFee,
           targetAddress,
           coalesceChainId(targetChain)
         )
+    : payload !== null
+    ? createTransferWrappedWithPayloadInstruction(
+        tokenBridgeAddress,
+        bridgeAddress,
+        payerAddress,
+        message.publicKey,
+        fromAddress,
+        fromOwnerAddress,
+        originChainId!,
+        originAddress!,
+        nonce,
+        amount,
+        targetAddress,
+        coalesceChainId(targetChain),
+        payload
+      )
+    : createTransferWrappedInstruction(
+        tokenBridgeAddress,
+        bridgeAddress,
+        payerAddress,
+        message.publicKey,
+        fromAddress,
+        fromOwnerAddress,
+        originChainId!,
+        originAddress!,
+        nonce,
+        amount,
+        relayerFee,
+        targetAddress,
+        coalesceChainId(targetChain)
+      );
+  const transaction = new SolanaTransaction().add(
+    approvalIx,
+    tokenBridgeTransferIx
   );
-  const transaction = new SolanaTransaction().add(transferIx, approvalIx, ix);
-  const { blockhash } = await connection.getRecentBlockhash();
+  const { blockhash } = await connection.getLatestBlockhash(commitment);
   transaction.recentBlockhash = blockhash;
   transaction.feePayer = new PublicKey(payerAddress);
-  transaction.partialSign(messageKey);
+  transaction.partialSign(message);
   return transaction;
 }
 
@@ -631,21 +812,9 @@ export async function transferFromAlgorand(
   return txs;
 }
 
-/**
- * Transfers an asset from Near to a receiver on another chain
- * @param client
- * @param coreBridge account 
- * @param tokenBridge account of the token bridge
- * @param assetId account
- * @param qty Quantity to transfer
- * @param receiver Receiving account
- * @param chain Reeiving chain
- * @param fee Transfer fee
- * @param payload payload for payload3 transfers
- * @returns [Sequence number of confirmation, emitter]
- */
 export async function transferTokenFromNear(
-  client: nearAccount,
+  provider: Provider,
+  account: string,
   coreBridge: string,
   tokenBridge: string,
   assetId: string,
@@ -654,52 +823,70 @@ export async function transferTokenFromNear(
   chain: ChainId | ChainName,
   fee: bigint,
   payload: string = ""
-): Promise<[number, string]> {
-  let wormhole = assetId.endsWith("." + tokenBridge);
+): Promise<FunctionCallOptions[]> {
+  const isWrapped = getIsWrappedAssetNear(tokenBridge, assetId);
 
-  let result;
+  const messageFee = await callFunctionNear(
+    provider,
+    coreBridge,
+    "message_fee",
+    {}
+  );
 
-  let message_fee = (await client.viewFunction(coreBridge, "message_fee", {}));
+  chain = coalesceChainId(chain);
 
-  if (wormhole) {
-    result = await client.functionCall({
-      contractId: tokenBridge,
-      methodName: "send_transfer_wormhole_token",
-      args: {
-        token: assetId,
-        amount: qty.toString(10),
-        receiver: uint8ArrayToHex(receiver),
-        chain: chain,
-        fee: fee.toString(10),
-        payload: payload,
-        message_fee: message_fee,
+  if (isWrapped) {
+    return [
+      {
+        contractId: tokenBridge,
+        methodName: "send_transfer_wormhole_token",
+        args: {
+          token: assetId,
+          amount: qty.toString(10),
+          receiver: uint8ArrayToHex(receiver),
+          chain,
+          fee: fee.toString(10),
+          payload: payload,
+          message_fee: messageFee,
+        },
+        attachedDeposit: new BN(messageFee + 1),
+        gas: new BN("100000000000000"),
       },
-      attachedDeposit: new BN(message_fee + 1),
-      gas: new BN("100000000000000"),
-    });
+    ];
   } else {
-    let bal = await client.viewFunction(assetId, "storage_balance_of", {
-      account_id: tokenBridge,
-    });
+    const options: FunctionCallOptions[] = [];
+    const bal = await callFunctionNear(
+      provider,
+      assetId,
+      "storage_balance_of",
+      {
+        account_id: tokenBridge,
+      }
+    );
     if (bal === null) {
       // Looks like we have to stake some storage for this asset
       // for the token bridge...
-      nearProviders.getTransactionLastResult(
-        await client.functionCall({
-          contractId: assetId,
-          methodName: "storage_deposit",
-          args: { account_id: tokenBridge, registration_only: true },
-          gas: new BN("100000000000000"),
-          attachedDeposit: new BN("2000000000000000000000"), // 0.002 NEAR
-        })
-      );
+      options.push({
+        contractId: assetId,
+        methodName: "storage_deposit",
+        args: { account_id: tokenBridge, registration_only: true },
+        gas: new BN("100000000000000"),
+        attachedDeposit: new BN("2000000000000000000000"), // 0.002 NEAR
+      });
     }
 
-    if (message_fee > 0) {
-      let bank = await client.viewFunction(tokenBridge, "bank_balance", { acct: client.accountId });
+    if (messageFee > 0) {
+      const bank = await callFunctionNear(
+        provider,
+        tokenBridge,
+        "bank_balance",
+        {
+          acct: account,
+        }
+      );
 
       if (!bank[0]) {
-        await client.functionCall({
+        options.push({
           contractId: tokenBridge,
           methodName: "register_bank",
           args: {},
@@ -708,18 +895,18 @@ export async function transferTokenFromNear(
         });
       }
 
-      if (bank[1] < message_fee) {
-        await client.functionCall({
+      if (bank[1] < messageFee) {
+        options.push({
           contractId: tokenBridge,
           methodName: "fill_bank",
           args: {},
           gas: new BN("100000000000000"),
-          attachedDeposit: new BN(message_fee),
+          attachedDeposit: new BN(messageFee),
         });
       }
     }
 
-    result = await client.functionCall({
+    options.push({
       contractId: assetId,
       methodName: "ft_transfer_call",
       args: {
@@ -727,34 +914,22 @@ export async function transferTokenFromNear(
         amount: qty.toString(10),
         msg: JSON.stringify({
           receiver: uint8ArrayToHex(receiver),
-          chain: chain,
+          chain,
           fee: fee.toString(10),
           payload: payload,
-          message_fee: message_fee,
+          message_fee: messageFee,
         }),
       },
       attachedDeposit: new BN(1),
       gas: new BN("100000000000000"),
     });
-  }
 
-  return parseSequenceFromLogNear(result);
+    return options;
+  }
 }
 
-/**
- * Transfers NEAR from Near to a receiver on another chain
- * @param client
- * @param coreBridge account 
- * @param tokenBridge account of the token bridge
- * @param qty Quantity to transfer
- * @param receiver Receiving account
- * @param chain Reeiving chain
- * @param fee Transfer fee
- * @param payload payload for payload3 transfers
- * @returns [Sequence number of confirmation, emitter]
- */
 export async function transferNearFromNear(
-  client: nearAccount,
+  provider: Provider,
   coreBridge: string,
   tokenBridge: string,
   qty: bigint,
@@ -762,22 +937,69 @@ export async function transferNearFromNear(
   chain: ChainId | ChainName,
   fee: bigint,
   payload: string = ""
-): Promise<[number, string]> {
-  let message_fee = await client.viewFunction(coreBridge, "message_fee", {});
-
-  let result = await client.functionCall({
+): Promise<FunctionCallOptions> {
+  const messageFee = await callFunctionNear(
+    provider,
+    coreBridge,
+    "message_fee",
+    {}
+  );
+  return {
     contractId: tokenBridge,
     methodName: "send_transfer_near",
     args: {
       receiver: uint8ArrayToHex(receiver),
-      chain: chain,
+      chain: coalesceChainId(chain),
       fee: fee.toString(10),
       payload: payload,
-      message_fee: message_fee,
+      message_fee: messageFee,
     },
-    attachedDeposit: (new BN(qty.toString(10)) + new BN(message_fee)),
+    attachedDeposit: new BN(qty.toString(10)).add(new BN(messageFee)),
     gas: new BN("100000000000000"),
-  });
+  };
+}
 
-  return parseSequenceFromLogNear(result);
+/**
+ * Transfer an asset on Aptos to another chain.
+ * @param tokenBridgeAddress Address of token bridge
+ * @param fullyQualifiedType Full qualified type of asset to transfer
+ * @param amount Amount to send to recipient
+ * @param recipientChain Target chain
+ * @param recipient Recipient's address on target chain
+ * @param relayerFee Fee to pay relayer
+ * @param payload Payload3 data, leave undefined for basic token transfers
+ * @returns Transaction payload
+ */
+export function transferFromAptos(
+  tokenBridgeAddress: string,
+  fullyQualifiedType: string,
+  amount: string,
+  recipientChain: ChainId | ChainName,
+  recipient: Uint8Array,
+  relayerFee: string = "0",
+  payload: string = ""
+): Types.EntryFunctionPayload {
+  if (payload) {
+    // Currently unsupported
+    return transferTokensWithPayload(
+      tokenBridgeAddress,
+      fullyQualifiedType,
+      amount,
+      recipientChain,
+      recipient,
+      relayerFee,
+      createNonce().readUInt32LE(0),
+      payload
+    );
+  }
+
+  return transferTokensAptos(
+    tokenBridgeAddress,
+    fullyQualifiedType,
+    amount,
+    recipientChain,
+    recipient,
+    relayerFee,
+    createNonce().readUInt32LE(0)
+  );
 }

@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"crypto/ecdsa"
+	"fmt"
 	"time"
 
 	"github.com/certusone/wormhole/node/pkg/notify/discord"
@@ -18,7 +19,7 @@ import (
 	gossipv1 "github.com/certusone/wormhole/node/pkg/proto/gossip/v1"
 	"github.com/certusone/wormhole/node/pkg/reporter"
 	"github.com/certusone/wormhole/node/pkg/supervisor"
-	"github.com/certusone/wormhole/node/pkg/vaa"
+	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 )
 
 type (
@@ -31,6 +32,8 @@ type (
 		// SigningMsg returns the hash of the signing body of the observation. This is used
 		// for signature generation and verification.
 		SigningMsg() ethcommon.Hash
+		// IsReliable returns whether this message is considered reliable meaning it can be reobserved.
+		IsReliable() bool
 		// HandleQuorum finishes processing the observation once a quorum of signatures have
 		// been received for it.
 		HandleQuorum(sigs []*vaa.Signature, hash string, p *Processor)
@@ -40,6 +43,8 @@ type (
 	state struct {
 		// First time this digest was seen (possibly even before we observed it ourselves).
 		firstObserved time.Time
+		// The most recent time that a re-observation request was sent to the guardian network.
+		lastRetry time.Time
 		// Copy of our observation.
 		ourObservation Observation
 		// Map of signatures seen by guardian. During guardian set updates, this may contain signatures belonging
@@ -69,6 +74,11 @@ type (
 	}
 )
 
+type PythNetVaaEntry struct {
+	v          *vaa.VAA
+	updateTime time.Time // Used for determining when to delete entries
+}
+
 type Processor struct {
 	// lockC is a channel of observed emitted messages
 	lockC chan *common.MessagePublication
@@ -97,6 +107,8 @@ type Processor struct {
 	devnetNumGuardians uint
 	devnetEthRPC       string
 
+	wormchainLCD string
+
 	attestationEvents *reporter.AttestationEventReporter
 
 	logger *zap.Logger
@@ -118,8 +130,9 @@ type Processor struct {
 	// cleanup triggers periodic state cleanup
 	cleanup *time.Ticker
 
-	notifier *discord.DiscordNotifier
-	governor *governor.ChainGovernor
+	notifier    *discord.DiscordNotifier
+	governor    *governor.ChainGovernor
+	pythnetVaas map[string]PythNetVaaEntry
 }
 
 func NewProcessor(
@@ -137,6 +150,7 @@ func NewProcessor(
 	devnetMode bool,
 	devnetNumGuardians uint,
 	devnetEthRPC string,
+	wormchainLCD string,
 	attestationEvents *reporter.AttestationEventReporter,
 	notifier *discord.DiscordNotifier,
 	g *governor.ChainGovernor,
@@ -157,14 +171,17 @@ func NewProcessor(
 		devnetEthRPC:       devnetEthRPC,
 		db:                 db,
 
+		wormchainLCD: wormchainLCD,
+
 		attestationEvents: attestationEvents,
 
 		notifier: notifier,
 
-		logger:   supervisor.Logger(ctx),
-		state:    &aggregationState{observationMap{}},
-		ourAddr:  crypto.PubkeyToAddress(gk.PublicKey),
-		governor: g,
+		logger:      supervisor.Logger(ctx),
+		state:       &aggregationState{observationMap{}},
+		ourAddr:     crypto.PubkeyToAddress(gk.PublicKey),
+		governor:    g,
+		pythnetVaas: make(map[string]PythNetVaaEntry),
 	}
 }
 
@@ -213,4 +230,37 @@ func (p *Processor) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func (p *Processor) storeSignedVAA(v *vaa.VAA) error {
+	if v.EmitterChain == vaa.ChainIDPythNet {
+		key := fmt.Sprintf("%v/%v", v.EmitterAddress, v.Sequence)
+		p.pythnetVaas[key] = PythNetVaaEntry{v: v, updateTime: time.Now()}
+		return nil
+	}
+	return p.db.StoreSignedVAA(v)
+}
+
+func (p *Processor) getSignedVAA(id db.VAAID) (*vaa.VAA, error) {
+	if id.EmitterChain == vaa.ChainIDPythNet {
+		key := fmt.Sprintf("%v/%v", id.EmitterAddress, id.Sequence)
+		ret, exists := p.pythnetVaas[key]
+		if exists {
+			return ret.v, nil
+		}
+
+		return nil, db.ErrVAANotFound
+	}
+
+	vb, err := p.db.GetSignedVAABytes(id)
+	if err != nil {
+		return nil, err
+	}
+
+	vaa, err := vaa.Unmarshal(vb)
+	if err != nil {
+		panic("failed to unmarshal VAA from db")
+	}
+
+	return vaa, err
 }

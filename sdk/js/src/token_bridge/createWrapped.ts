@@ -1,14 +1,33 @@
-import { Connection, PublicKey, Transaction } from "@solana/web3.js";
+import {
+  Commitment,
+  Connection,
+  PublicKey,
+  PublicKeyInitData,
+  Transaction,
+} from "@solana/web3.js";
 import { MsgExecuteContract } from "@terra-money/terra.js";
 import { Algodv2 } from "algosdk";
+import { Types } from "aptos";
+import BN from "bn.js";
 import { ethers, Overrides } from "ethers";
 import { fromUint8Array } from "js-base64";
-import { TransactionSignerPair, _submitVAAAlgorand } from "../algorand";
+import {
+  TransactionSignerPair,
+  _parseVAAAlgorand,
+  _submitVAAAlgorand,
+} from "../algorand";
 import { Bridge__factory } from "../ethers-contracts";
-import { ixFromRust } from "../solana";
-import { importTokenWasm } from "../solana/wasm";
-import { Account as nearAccount, providers as nearProviders } from "near-api-js";
-import BN from "bn.js";
+import { submitVAAOnInjective } from "./redeem";
+import { FunctionCallOptions } from "near-api-js/lib/account";
+import { Provider } from "near-api-js/lib/providers";
+import { callFunctionNear } from "../utils";
+import { MsgExecuteContract as XplaMsgExecuteContract } from "@xpla/xpla.js";
+import {
+  createWrappedCoin as createWrappedCoinAptos,
+  createWrappedCoinType as createWrappedCoinTypeAptos,
+} from "../aptos";
+import { createCreateWrappedInstruction } from "../solana/tokenBridge";
+import { SignedVaa } from "../vaa";
 
 export async function createWrappedOnEth(
   tokenBridgeAddress: string,
@@ -34,24 +53,37 @@ export async function createWrappedOnTerra(
   });
 }
 
+export const createWrappedOnInjective = submitVAAOnInjective;
+
+export function createWrappedOnXpla(
+  tokenBridgeAddress: string,
+  walletAddress: string,
+  signedVAA: Uint8Array
+): XplaMsgExecuteContract {
+  return new XplaMsgExecuteContract(walletAddress, tokenBridgeAddress, {
+    submit_vaa: {
+      data: fromUint8Array(signedVAA),
+    },
+  });
+}
+
 export async function createWrappedOnSolana(
   connection: Connection,
-  bridgeAddress: string,
-  tokenBridgeAddress: string,
-  payerAddress: string,
-  signedVAA: Uint8Array
+  bridgeAddress: PublicKeyInitData,
+  tokenBridgeAddress: PublicKeyInitData,
+  payerAddress: PublicKeyInitData,
+  signedVaa: SignedVaa,
+  commitment?: Commitment
 ): Promise<Transaction> {
-  const { create_wrapped_ix } = await importTokenWasm();
-  const ix = ixFromRust(
-    create_wrapped_ix(
+  const transaction = new Transaction().add(
+    createCreateWrappedInstruction(
       tokenBridgeAddress,
       bridgeAddress,
       payerAddress,
-      signedVAA
+      signedVaa
     )
   );
-  const transaction = new Transaction().add(ix);
-  const { blockhash } = await connection.getRecentBlockhash();
+  const { blockhash } = await connection.getLatestBlockhash(commitment);
   transaction.recentBlockhash = blockhash;
   transaction.feePayer = new PublicKey(payerAddress);
   return transaction;
@@ -74,30 +106,61 @@ export async function createWrappedOnAlgorand(
 }
 
 export async function createWrappedOnNear(
-  client: nearAccount,
+  provider: Provider,
   tokenBridge: string,
   attestVAA: Uint8Array
-): Promise<string> {
-  // Could we just pass in the vaa already as hex?
-  let vaa = Buffer.from(attestVAA).toString("hex");
+): Promise<FunctionCallOptions[]> {
+  const vaa = Buffer.from(attestVAA).toString("hex");
+  const res = await callFunctionNear(
+    provider,
+    tokenBridge,
+    "deposit_estimates"
+  );
+  const msgs = [
+    {
+      contractId: tokenBridge,
+      methodName: "submit_vaa",
+      args: { vaa },
+      attachedDeposit: new BN(res[1]),
+      gas: new BN("150000000000000"),
+    },
+  ];
+  msgs.push({ ...msgs[0] });
+  return msgs;
+}
 
-  let res = await client.viewFunction(tokenBridge, "deposit_estimates", {});
+/**
+ * Constructs payload to create wrapped asset type. The type is of form `{{address}}::coin::T`,
+ * where address is `sha256_hash(tokenBridgeAddress | chainID | "::" | originAddress | 0xFF)`.
+ * 
+ * Note that the typical createWrapped call is broken into two parts on Aptos because we must first 
+ * create the CoinType that is used by `create_wrapped_coin<CoinType>`. Since it's not possible to 
+ * create a resource and use it in the same transaction, this is broken into separate transactions.
+ * @param tokenBridgeAddress Address of token bridge
+ * @param attestVAA Bytes of attest VAA
+ * @returns Transaction payload
+ */
+export function createWrappedTypeOnAptos(
+  tokenBridgeAddress: string,
+  attestVAA: Uint8Array
+): Types.EntryFunctionPayload {
+  return createWrappedCoinTypeAptos(tokenBridgeAddress, attestVAA);
+}
 
-  let result = await client.functionCall({
-    contractId: tokenBridge,
-    methodName: "submit_vaa",
-    args: { vaa: vaa },
-    attachedDeposit: new BN(res[1]),
-    gas: new BN("150000000000000"),
-  });
-
-  result = await client.functionCall({
-    contractId: tokenBridge,
-    methodName: "submit_vaa",
-    args: { vaa: vaa },
-    attachedDeposit: new BN(res[1]),
-    gas: new BN("150000000000000"),
-  });
-
-  return nearProviders.getTransactionLastResult(result);
+/**
+ * Constructs payload to create wrapped asset. 
+ * 
+ * Note that this function is typically called in tandem with `createWrappedTypeOnAptos` because 
+ * we must first create the CoinType that is used by `create_wrapped_coin<CoinType>`. Since it's 
+ * not possible to create a resource and use it in the same transaction, this is broken into 
+ * separate transactions.
+ * @param tokenBridgeAddress Address of token bridge
+ * @param attestVAA Bytes of attest VAA
+ * @returns Transaction payload
+ */
+export function createWrappedOnAptos(
+  tokenBridgeAddress: string,
+  attestVAA: Uint8Array
+): Types.EntryFunctionPayload {
+  return createWrappedCoinAptos(tokenBridgeAddress, attestVAA);
 }

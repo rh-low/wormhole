@@ -2,8 +2,11 @@
 members = [
     "contracts/cw20-wrapped",
     "contracts/wormhole",
+    "contracts/shutdown-wormhole",
     "contracts/token-bridge",
+    "contracts/shutdown-token-bridge",
     "contracts/mock-bridge-integration",
+    "packages/wormhole-bindings",
 ]
 
 [profile.release]
@@ -16,3 +19,10 @@ codegen-units = 1
 panic = 'abort'
 incremental = false
 overflow-checks = true
+
+[patch.crates-io]
+cw20-wrapped-2 = { path = "contracts/cw20-wrapped" }
+token-bridge-terra-2 = { path = "contracts/token-bridge" }
+wormhole-bindings = { path = "packages/wormhole-bindings" }
+wormhole-bridge-terra-2 = { path = "contracts/wormhole" }
+

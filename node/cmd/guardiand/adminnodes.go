@@ -11,8 +11,8 @@ import (
 	"time"
 
 	publicrpcv1 "github.com/certusone/wormhole/node/pkg/proto/publicrpc/v1"
-	"github.com/certusone/wormhole/node/pkg/vaa"
 	"github.com/spf13/cobra"
+	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 )
 
 // How to test in container:
@@ -66,16 +66,6 @@ func runListNodes(cmd *cobra.Command, args []string) {
 
 	log.Printf("%d nodes in guardian state set", len(nodes))
 
-	// Check if any node is sending Ropsten metrics
-	var isTestnet bool
-	for _, node := range nodes {
-		for _, network := range node.RawHeartbeat.Networks {
-			if vaa.ChainID(network.Id) == vaa.ChainIDEthereumRopsten {
-				isTestnet = true
-			}
-		}
-	}
-
 	w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
 
 	headers := []string{
@@ -103,6 +93,8 @@ func runListNodes(cmd *cobra.Command, args []string) {
 		{"Polygon", vaa.ChainIDPolygon},
 		{"Avalanche", vaa.ChainIDAvalanche},
 		{"Algorand", vaa.ChainIDAlgorand},
+		{"Aptos", vaa.ChainIDAptos},
+		{"Sui", vaa.ChainIDSui},
 		{"Oasis", vaa.ChainIDOasis},
 		{"Aurora", vaa.ChainIDAurora},
 		{"Fantom", vaa.ChainIDFantom},
@@ -113,13 +105,14 @@ func runListNodes(cmd *cobra.Command, args []string) {
 		{"Near", vaa.ChainIDNear},
 		{"Terra2", vaa.ChainIDTerra2},
 		{"Pythnet", vaa.ChainIDPythNet},
-	}
-
-	if isTestnet {
-		networks = append(networks, network{"Ropsten", vaa.ChainIDEthereumRopsten})
-		networks = append(networks, network{"Moonbeam", vaa.ChainIDMoonbeam})
-		networks = append(networks, network{"Neon", vaa.ChainIDNeon})
-		networks = append(networks, network{"Injective", vaa.ChainIDInjective})
+		{"Moonbeam", vaa.ChainIDMoonbeam},
+		{"Arbitrum", vaa.ChainIDArbitrum},
+		{"Optimism", vaa.ChainIDOptimism},
+		{"Xpla", vaa.ChainIDXpla},
+		{"Btc", vaa.ChainIDBtc},
+		{"Injective", vaa.ChainIDInjective},
+		{"Neon", vaa.ChainIDNeon},
+		{"Wormchain", vaa.ChainIDWormchain},
 	}
 
 	if len(only) > 0 {

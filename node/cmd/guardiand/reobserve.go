@@ -7,7 +7,7 @@ import (
 
 	"github.com/benbjohnson/clock"
 	gossipv1 "github.com/certusone/wormhole/node/pkg/proto/gossip/v1"
-	"github.com/certusone/wormhole/node/pkg/vaa"
+	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 	"go.uber.org/zap"
 )
 
@@ -57,10 +57,16 @@ func handleReobservationRequests(
 				continue
 			}
 
-			cache[r] = clock.Now()
-
 			if channel, ok := chainObsvReqC[r.chainId]; ok {
-				channel <- req
+				select {
+				case channel <- req:
+					cache[r] = clock.Now()
+
+				default:
+					logger.Warn("failed to send reobservation request to watcher",
+						zap.Stringer("chain_id", r.chainId),
+						zap.String("tx_hash", r.txHash))
+				}
 			} else {
 				logger.Error("unknown chain ID for reobservation request",
 					zap.Uint16("chain_id", uint16(r.chainId)),

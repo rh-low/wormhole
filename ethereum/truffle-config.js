@@ -18,10 +18,7 @@ module.exports = {
     },
     ethereum: {
       provider: () =>
-        new HDWalletProvider(
-          process.env.MNEMONIC,
-          "https://rpc.ankr.com/eth",
-        ),
+        new HDWalletProvider(process.env.MNEMONIC, "https://rpc.ankr.com/eth"),
       network_id: 1,
       confirmations: 1,
       timeoutBlocks: 200,
@@ -31,7 +28,7 @@ module.exports = {
       provider: () =>
         new HDWalletProvider(
           process.env.MNEMONIC,
-          "https://rpc.ankr.com/eth_rinkeby",
+          "https://rpc.ankr.com/eth_rinkeby"
         ),
       network_id: 4,
       gas: 5500000,
@@ -82,7 +79,7 @@ module.exports = {
       provider: () => {
         return new HDWalletProvider(
           process.env.MNEMONIC,
-          "https://rpc.ankr.com/polygon_mumbai",
+          "https://rpc.ankr.com/polygon_mumbai"
         );
       },
       network_id: "80001",
@@ -203,8 +200,9 @@ module.exports = {
         );
       },
       network_id: 787,
-      gasPrice: "0x2f3e3403ea",
-      gas: "0x6fc3540",
+      gasPrice: "0x33a70303ea",
+      gasLimit: "0x6fc3540",
+      gas: "0x6fc3400",
     },
     acala_testnet: {
       provider: () => {
@@ -221,7 +219,10 @@ module.exports = {
     klaytn: {
       // Note that Klaytn works with version 5.3.14 of truffle, but not some of the newer versions.
       provider: () => {
-        return new KLAYHDWalletProvider(process.env.MNEMONIC, "https://public-node-api.klaytnapi.com/v1/cypress");
+        return new KLAYHDWalletProvider(
+          process.env.MNEMONIC,
+          "https://public-node-api.klaytnapi.com/v1/cypress"
+        );
       },
       network_id: "8217", //Klaytn mainnet's network id
       gas: "8500000",
@@ -268,7 +269,7 @@ module.exports = {
         );
       },
       network_id: 1284,
-    },    
+    },
     moonbeam_testnet: {
       provider: () => {
         return new HDWalletProvider(
@@ -291,7 +292,8 @@ module.exports = {
       gas: 3000000000,
       gasPrice: 443065000000,
     },
-    arbitrum: { // Note that arbitrum did not work with our standard version of truffle (5.3.14), but it did work with the latest (5.5.22)
+    arbitrum: {
+      // Note that arbitrum did not work with our standard version of truffle (5.3.14), but it did work with the latest (5.5.22)
       provider: () => {
         return new HDWalletProvider(
           process.env.MNEMONIC,
@@ -300,14 +302,14 @@ module.exports = {
       },
       network_id: 42161,
     },
-    arbitrum_testnet: { // Note that arbitrum did not work with our standard version of truffle (5.3.14), but it did work with the latest (5.5.22)
+    arbitrum_testnet: {
       provider: () => {
         return new HDWalletProvider(
           process.env.MNEMONIC,
-          "https://rinkeby.arbitrum.io/rpc"
+          "https://goerli-rollup.arbitrum.io/rpc"
         );
       },
-      network_id: '*',
+      network_id: 421613,
     },
     optimism: {
       provider: () => {
@@ -322,7 +324,8 @@ module.exports = {
       provider: () => {
         return new HDWalletProvider(
           process.env.MNEMONIC,
-          "https://goerli.optimism.io"
+          "https://rpc.ankr.com/optimism_testnet"
+          // "https://goerli.optimism.io"  <== This didn't work for testnet
         );
       },
       network_id: 420,

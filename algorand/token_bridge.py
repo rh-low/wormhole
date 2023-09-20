@@ -25,6 +25,7 @@ from globals import *
 from inlineasm import *
 
 from algosdk.v2client.algod import AlgodClient
+from algosdk.encoding import decode_address
 
 from TmplSig import TmplSig
 from local_blob import LocalBlob
@@ -58,6 +59,12 @@ def fullyCompileContract(genTeal, client: AlgodClient, contract: Expr, name, dev
             teal = f.read()
 
     response = client.compile(teal)
+
+    with open(name + ".bin", "w") as fout:
+        fout.write(response["result"])
+    with open(name + ".hash", "w") as fout:
+        fout.write(decode_address(response["hash"]).hex())
+
     return response
 
 def clear_token_bridge():
@@ -286,6 +293,27 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig, devMode: bool):
 
             Approve()
         ])
+
+#    # This blows up an asset on algorand.  This will be added temporarily (and then removed) to clean some stuff before we relaunch
+#    def killAsset():
+#        return Seq([
+#            MagicAssert(Txn.sender() == Global.creator_address()),
+#
+#            blob.zero(Int(1)),
+#
+#            InnerTxnBuilder.Begin(),
+#            InnerTxnBuilder.SetFields(
+#                {
+#                    TxnField.sender: Global.current_application_address(),
+#                    TxnField.type_enum: TxnType.AssetConfig,
+#                    TxnField.config_asset: Btoi(Txn.application_args[1]),
+#                    TxnField.fee: Int(0),
+#                }
+#            ),
+#            InnerTxnBuilder.Submit(),
+#
+#            Approve()
+#        ])
     
     def receiveAttest():
         me = Global.current_application_address()
@@ -408,14 +436,13 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig, devMode: bool):
                             TxnField.type_enum: TxnType.AssetConfig,
                             TxnField.config_asset_name: Name.load(),
                             TxnField.config_asset_unit_name: Symbol.load(),
-                            TxnField.config_asset_total: Int(18446744073709551614),
+                            TxnField.config_asset_total: Int(18446744073709550000),
                             TxnField.config_asset_decimals: Decimals.load(),
                             TxnField.config_asset_manager: me,
                             TxnField.config_asset_reserve: Txn.accounts[3],
 
-                        # We cannot freeze or clawback assets... per the spirit of 
-                            TxnField.config_asset_freeze: Global.zero_address(),
-                            TxnField.config_asset_clawback: Global.zero_address(),
+                            TxnField.config_asset_freeze: me,
+                            TxnField.config_asset_clawback: me,
 
                             TxnField.fee: Int(0),
                         }
@@ -956,21 +983,15 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig, devMode: bool):
         App.globalPut(Bytes("coreid"), Btoi(Txn.application_args[0])),
         App.globalPut(Bytes("coreAddr"), Txn.application_args[1]),
         App.globalPut(Bytes("validUpdateApproveHash"), Bytes("")),
-        App.globalPut(Bytes("validUpdateClearHash"), Bytes("base16", "73be5fd7cd378289177bf4a7ca5433ab30d91b417381bba8bd704aff2dec424f")), # empty clear state program
         Return(Int(1))
     ])
 
     def getOnUpdate():
-        if devMode:
-            return Seq( [
-                Return(Txn.sender() == Global.creator_address()),
-            ])
-        else:
-            return Seq( [
-                MagicAssert(Sha512_256(Concat(Bytes("Program"), Txn.approval_program())) == App.globalGet(Bytes("validUpdateApproveHash"))),
-                MagicAssert(Sha512_256(Concat(Bytes("Program"), Txn.clear_state_program())) == App.globalGet(Bytes("validUpdateClearHash"))),
-                Return(Int(1))
-            ] )
+        return Seq( [
+            MagicAssert(Sha512_256(Concat(Bytes("Program"), Txn.approval_program())) == App.globalGet(Bytes("validUpdateApproveHash"))),
+            MagicAssert(And(Len(Txn.clear_state_program()) == Int(4), Extract(Txn.clear_state_program(), Int(1), Int(3)) == Bytes("base16", "810143"))),
+            Return(Int(1))
+        ] )
 
     on_update = getOnUpdate()
 
@@ -1022,3 +1043,14 @@ def get_token_bridge(genTeal, approve_name, clear_name, client: AlgodClient, see
     CLEAR_STATE_PROGRAM = fullyCompileContract(genTeal, client, clear_token_bridge(), clear_name, devMode)
 
     return APPROVAL_PROGRAM, CLEAR_STATE_PROGRAM
+
+def cli(output_approval, output_clear):
+    seed_amt = 1002000
+    tmpl_sig = TmplSig("sig")
+
+    client = AlgodClient("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "https://testnet-api.algonode.cloud")
+
+    approval, clear = get_token_bridge(True, output_approval, output_clear, client, seed_amt, tmpl_sig, False)
+
+if __name__ == "__main__":
+    cli(sys.argv[1], sys.argv[2])
